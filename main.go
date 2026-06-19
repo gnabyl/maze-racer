@@ -8,7 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,7 +24,8 @@ func main() {
 	rooms := flag.Int("rooms", 15, "maze size (number of rooms per side)")
 	extraPass := flag.Float64("extra", 0.1, "fraction of extra passages (0.0-1.0)")
 	tickMs := flag.Int("tick", 300, "tick rate in milliseconds")
-	addr := flag.String("addr", "", "listen address (overrides PORT env; default :8080)")
+	gameAddr := flag.String("game-addr", ":8080", "game listener (contestants /join) — bind to 0.0.0.0 so it's reachable via SSM tunnel")
+	adminAddr := flag.String("admin-addr", "127.0.0.1:9090", "admin listener (UI + /spectate) — bind loopback so only a local tunnel reaches it")
 	flag.Parse()
 
 	rng := rand.New(rand.NewSource(42))
@@ -33,8 +33,9 @@ func main() {
 	log.Printf("maze: %dx%d rooms, extra=%.2f, tick=%dms", *rooms, *rooms, *extraPass, *tickMs)
 	go hub.Run()
 
-	// player connection: /join/{id}
-	http.HandleFunc("/join/{id}", func(w http.ResponseWriter, r *http.Request) {
+	// game mux: only /join/{id} — exposed to contestants
+	gameMux := http.NewServeMux()
+	gameMux.HandleFunc("/join/{id}", func(w http.ResponseWriter, r *http.Request) {
 		playerID := r.PathValue("id")
 		if playerID == "" {
 			http.Error(w, "missing player id", http.StatusBadRequest)
@@ -66,8 +67,9 @@ func main() {
 		p.ReadPump()
 	})
 
-	// spectator connection: /spectate
-	http.HandleFunc("/spectate", func(w http.ResponseWriter, r *http.Request) {
+	// admin mux: spectator UI + /spectate (start/restart control) — loopback only
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("/spectate", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("spectator upgrade error: %v", err)
@@ -84,25 +86,18 @@ func main() {
 		s.ReadPump(hub)
 	})
 
-	// serve spectator UI from embedded files
 	uiFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		log.Fatal(err)
 	}
-	http.Handle("/", http.FileServer(http.FS(uiFS)))
+	adminMux.Handle("/", http.FileServer(http.FS(uiFS)))
 
-	listenAddr := resolveAddr(*addr)
-	log.Printf("server listening on %s", listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
-}
+	// run admin listener in background, game listener in foreground
+	go func() {
+		log.Printf("admin  listening on %s (UI + /spectate)", *adminAddr)
+		log.Fatal(http.ListenAndServe(*adminAddr, adminMux))
+	}()
 
-// resolveAddr picks the listen address: -addr flag, then PORT env, then :8080.
-func resolveAddr(flagAddr string) string {
-	if flagAddr != "" {
-		return flagAddr
-	}
-	if port := os.Getenv("PORT"); port != "" {
-		return ":" + port
-	}
-	return ":8080"
+	log.Printf("game   listening on %s (/join)", *gameAddr)
+	log.Fatal(http.ListenAndServe(*gameAddr, gameMux))
 }
