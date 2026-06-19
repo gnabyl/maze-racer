@@ -1,0 +1,13 @@
+# build artifacts
+/maze-server
+/maze-client
+maze-server
+maze-client
+
+# secrets / keys — never commit
+*.pem
+*.key
+.env
+
+# OS / editor cruft
+.DS_Store
