@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"time"
 )
 
 type joinRequest struct {
@@ -16,28 +17,31 @@ type Hub struct {
 	maze       *Maze
 	players    map[string]*Player
 	spectators map[*Spectator]bool
+	tickRate   time.Duration
 
 	join           chan joinRequest
 	leave          chan *Player
-	move           chan MoveRequest
 	joinSpectator  chan *Spectator
 	leaveSpectator chan *Spectator
 }
 
-func NewHub(cfg MazeConfig, rng *rand.Rand) *Hub {
+func NewHub(cfg MazeConfig, rng *rand.Rand, tickRate time.Duration) *Hub {
 	return &Hub{
 		maze:           GenerateMaze(cfg, rng),
 		players:        make(map[string]*Player),
 		spectators:     make(map[*Spectator]bool),
+		tickRate:       tickRate,
 		join:           make(chan joinRequest),
 		leave:          make(chan *Player),
-		move:           make(chan MoveRequest),
 		joinSpectator:  make(chan *Spectator),
 		leaveSpectator: make(chan *Spectator),
 	}
 }
 
 func (h *Hub) Run() {
+	ticker := time.NewTicker(h.tickRate)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case req := <-h.join:
@@ -58,9 +62,6 @@ func (h *Hub) Run() {
 				h.broadcastSpectatorState()
 			}
 
-		case req := <-h.move:
-			h.handleMove(req)
-
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
 			log.Printf("spectator joined (total: %d)", len(h.spectators))
@@ -74,38 +75,39 @@ func (h *Hub) Run() {
 				close(s.send)
 				log.Printf("spectator left (total: %d)", len(h.spectators))
 			}
+
+		case <-ticker.C:
+			h.tick()
 		}
 	}
 }
 
-func (h *Hub) handleMove(req MoveRequest) {
-	p := req.player
-
-	// ignore move from disconnected player
-	if h.players[p.id] != p {
-		return
+func (h *Hub) tick() {
+	moved := false
+	for _, p := range h.players {
+		dir := p.popMove()
+		if dir == "" {
+			continue
+		}
+		di, ok := dirMap[dir]
+		if !ok {
+			p.send <- errMsg("unknown direction: " + dir)
+			continue
+		}
+		d := dirs[di]
+		cell := h.maze.Grid[p.pos.R][p.pos.C]
+		if cell&d.wall != 0 {
+			p.send <- errMsg("wall")
+			continue
+		}
+		p.pos.R += d.dr
+		p.pos.C += d.dc
+		p.send <- h.playerState(p)
+		moved = true
 	}
-
-	di, ok := dirMap[req.dir]
-	if !ok {
-		p.send <- errMsg("unknown direction: " + req.dir)
-		return
+	if moved {
+		h.broadcastSpectatorState()
 	}
-
-	d := dirs[di]
-	cell := h.maze.Grid[p.pos.R][p.pos.C]
-
-	// check wall in requested direction (lower 4 bits only)
-	if cell&d.wall != 0 {
-		p.send <- errMsg("wall")
-		return
-	}
-
-	p.pos.R += d.dr
-	p.pos.C += d.dc
-
-	p.send <- h.playerState(p)
-	h.broadcastSpectatorState()
 }
 
 func (h *Hub) Join(p *Player) error {
@@ -114,7 +116,6 @@ func (h *Hub) Join(p *Player) error {
 	return <-result
 }
 
-// playerState builds the fog-of-war state message for a player.
 func (h *Hub) playerState(p *Player) []byte {
 	msg, _ := json.Marshal(map[string]any{
 		"type": "state",
@@ -132,7 +133,6 @@ func errMsg(reason string) []byte {
 	return msg
 }
 
-// spectatorState builds the full maze state message for spectators.
 func (h *Hub) spectatorState() ([]byte, error) {
 	flat := make([]int, 0, h.maze.Rooms*h.maze.Rooms)
 	for _, row := range h.maze.Grid {
@@ -165,7 +165,6 @@ func (h *Hub) broadcastSpectatorState() {
 		select {
 		case s.send <- msg:
 		default:
-			// slow spectator: drop the frame
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -15,7 +16,7 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	rng := rand.New(rand.NewSource(42))
-	hub := NewHub(MazeConfig{Rooms: 15, ExtraPass: 0.1}, rng)
+	hub := NewHub(MazeConfig{Rooms: 15, ExtraPass: 0.1}, rng, 300*time.Millisecond)
 	go hub.Run()
 
 	// player connection: /join/{id}

@@ -3,21 +3,31 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 )
 
 type Player struct {
-	id   string
-	conn *websocket.Conn
-	hub  *Hub
-	send chan []byte
-	pos  Pos
+	id          string
+	conn        *websocket.Conn
+	hub         *Hub
+	send        chan []byte
+	pos         Pos
+	pendingMove atomic.Pointer[string] // latest move, nil if none queued
 }
 
-type MoveRequest struct {
-	player *Player
-	dir    string // "UP", "DOWN", "LEFT", "RIGHT"
+func (p *Player) queueMove(dir string) {
+	p.pendingMove.Store(&dir)
+}
+
+// popMove returns the queued move and clears it, or "" if none.
+func (p *Player) popMove() string {
+	ptr := p.pendingMove.Swap(nil)
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
 }
 
 func (p *Player) ReadPump() {
@@ -43,7 +53,7 @@ func (p *Player) ReadPump() {
 			continue
 		}
 
-		p.hub.move <- MoveRequest{player: p, dir: msg.Move}
+		p.queueMove(msg.Move)
 	}
 }
 
