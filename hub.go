@@ -19,6 +19,7 @@ type Hub struct {
 
 	join           chan joinRequest
 	leave          chan *Player
+	move           chan MoveRequest
 	joinSpectator  chan *Spectator
 	leaveSpectator chan *Spectator
 }
@@ -30,6 +31,7 @@ func NewHub(cfg MazeConfig, rng *rand.Rand) *Hub {
 		spectators:     make(map[*Spectator]bool),
 		join:           make(chan joinRequest),
 		leave:          make(chan *Player),
+		move:           make(chan MoveRequest),
 		joinSpectator:  make(chan *Spectator),
 		leaveSpectator: make(chan *Spectator),
 	}
@@ -56,10 +58,12 @@ func (h *Hub) Run() {
 				h.broadcastSpectatorState()
 			}
 
+		case req := <-h.move:
+			h.handleMove(req)
+
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
 			log.Printf("spectator joined (total: %d)", len(h.spectators))
-			// send current state immediately on connect
 			if msg, err := h.spectatorState(); err == nil {
 				s.send <- msg
 			}
@@ -74,15 +78,62 @@ func (h *Hub) Run() {
 	}
 }
 
+func (h *Hub) handleMove(req MoveRequest) {
+	p := req.player
+
+	// ignore move from disconnected player
+	if h.players[p.id] != p {
+		return
+	}
+
+	di, ok := dirMap[req.dir]
+	if !ok {
+		p.send <- errMsg("unknown direction: " + req.dir)
+		return
+	}
+
+	d := dirs[di]
+	cell := h.maze.Grid[p.pos.R][p.pos.C]
+
+	// check wall in requested direction (lower 4 bits only)
+	if cell&d.wall != 0 {
+		p.send <- errMsg("wall")
+		return
+	}
+
+	p.pos.R += d.dr
+	p.pos.C += d.dc
+
+	p.send <- h.playerState(p)
+	h.broadcastSpectatorState()
+}
+
 func (h *Hub) Join(p *Player) error {
 	result := make(chan error, 1)
 	h.join <- joinRequest{player: p, result: result}
 	return <-result
 }
 
+// playerState builds the fog-of-war state message for a player.
+func (h *Hub) playerState(p *Player) []byte {
+	msg, _ := json.Marshal(map[string]any{
+		"type": "state",
+		"fog":  h.maze.Fog(p.pos),
+		"pos":  p.pos,
+	})
+	return msg
+}
+
+func errMsg(reason string) []byte {
+	msg, _ := json.Marshal(map[string]any{
+		"type": "error",
+		"msg":  reason,
+	})
+	return msg
+}
+
 // spectatorState builds the full maze state message for spectators.
 func (h *Hub) spectatorState() ([]byte, error) {
-	// flatten grid to 1D array
 	flat := make([]int, 0, h.maze.Rooms*h.maze.Rooms)
 	for _, row := range h.maze.Grid {
 		flat = append(flat, row...)

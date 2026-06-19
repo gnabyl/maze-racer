@@ -47,6 +47,7 @@ func main() {
 		}
 
 		p.send <- []byte(fmt.Sprintf(`{"type":"welcome","player_id":%q}`, playerID))
+		p.send <- hub.playerState(p)
 		hub.broadcastSpectatorState()
 
 		go p.WritePump()

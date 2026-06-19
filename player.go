@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 
 	"github.com/gorilla/websocket"
@@ -14,6 +15,11 @@ type Player struct {
 	pos  Pos
 }
 
+type MoveRequest struct {
+	player *Player
+	dir    string // "UP", "DOWN", "LEFT", "RIGHT"
+}
+
 func (p *Player) ReadPump() {
 	defer func() {
 		p.hub.leave <- p
@@ -21,14 +27,23 @@ func (p *Player) ReadPump() {
 	}()
 
 	for {
-		_, msg, err := p.conn.ReadMessage()
+		_, raw, err := p.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("player %s read error: %v", p.id, err)
 			}
 			break
 		}
-		log.Printf("player %s sent: %s", p.id, msg)
+
+		var msg struct {
+			Move string `json:"move"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil || msg.Move == "" {
+			log.Printf("player %s bad message: %s", p.id, raw)
+			continue
+		}
+
+		p.hub.move <- MoveRequest{player: p, dir: msg.Move}
 	}
 }
 
