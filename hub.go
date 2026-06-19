@@ -13,26 +13,42 @@ type joinRequest struct {
 	result chan error
 }
 
+type rankEntry struct {
+	Rank    int    `json:"rank"`
+	ID      string `json:"id"`
+	Elapsed int64  `json:"elapsed_ms"`
+}
+
 type Hub struct {
+	cfg        MazeConfig
+	rng        *rand.Rand
 	maze       *Maze
 	players    map[string]*Player
 	spectators map[*Spectator]bool
 	tickRate   time.Duration
+	started    bool
+	rankings   []rankEntry
 
 	join           chan joinRequest
 	leave          chan *Player
+	startGame      chan struct{}
+	restartGame    chan struct{}
 	joinSpectator  chan *Spectator
 	leaveSpectator chan *Spectator
 }
 
 func NewHub(cfg MazeConfig, rng *rand.Rand, tickRate time.Duration) *Hub {
 	return &Hub{
+		cfg:            cfg,
+		rng:            rng,
 		maze:           GenerateMaze(cfg, rng),
 		players:        make(map[string]*Player),
 		spectators:     make(map[*Spectator]bool),
 		tickRate:       tickRate,
 		join:           make(chan joinRequest),
 		leave:          make(chan *Player),
+		startGame:      make(chan struct{}, 1),
+		restartGame:    make(chan struct{}, 1),
 		joinSpectator:  make(chan *Spectator),
 		leaveSpectator: make(chan *Spectator),
 	}
@@ -53,6 +69,7 @@ func (h *Hub) Run() {
 			h.players[p.id] = p
 			req.result <- nil
 			log.Printf("player joined: %s (total: %d)", p.id, len(h.players))
+			h.broadcastSpectatorState()
 
 		case p := <-h.leave:
 			if current, ok := h.players[p.id]; ok && current == p {
@@ -61,6 +78,35 @@ func (h *Hub) Run() {
 				log.Printf("player left: %s (total: %d)", p.id, len(h.players))
 				h.broadcastSpectatorState()
 			}
+
+		case <-h.startGame:
+			if h.started {
+				continue
+			}
+			h.started = true
+			h.rankings = nil
+			now := time.Now()
+			for _, p := range h.players {
+				p.joinedAt = now
+				p.won = false
+				p.pos = h.maze.Start
+				p.send <- h.playerState(p)
+			}
+			h.broadcastSpectatorState()
+			log.Printf("game started with %d players", len(h.players))
+
+		case <-h.restartGame:
+			h.maze = GenerateMaze(h.cfg, h.rng)
+			h.started = false
+			h.rankings = nil
+			for _, p := range h.players {
+				p.won = false
+				p.pos = h.maze.Start
+				p.pendingMove.Store(nil)
+				p.send <- []byte(`{"type":"waiting"}`)
+			}
+			h.broadcastSpectatorState()
+			log.Printf("game restarted")
 
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
@@ -77,7 +123,9 @@ func (h *Hub) Run() {
 			}
 
 		case <-ticker.C:
-			h.tick()
+			if h.started {
+				h.tick()
+			}
 		}
 	}
 }
@@ -110,7 +158,13 @@ func (h *Hub) tick() {
 
 		if p.pos == h.maze.Flag {
 			p.won = true
-			h.broadcastWin(p.id, time.Since(p.joinedAt))
+			elapsed := time.Since(p.joinedAt)
+			h.rankings = append(h.rankings, rankEntry{
+				Rank:    len(h.rankings) + 1,
+				ID:      p.id,
+				Elapsed: elapsed.Milliseconds(),
+			})
+			h.broadcastWin(p.id, elapsed)
 		}
 	}
 	if moved {
@@ -150,38 +204,40 @@ func (h *Hub) spectatorState() ([]byte, error) {
 	type playerInfo struct {
 		ID  string `json:"id"`
 		Pos Pos    `json:"pos"`
+		Won bool   `json:"won"`
 	}
 	players := make([]playerInfo, 0, len(h.players))
 	for _, p := range h.players {
-		players = append(players, playerInfo{ID: p.id, Pos: p.pos})
+		players = append(players, playerInfo{ID: p.id, Pos: p.pos, Won: p.won})
 	}
 
 	return json.Marshal(map[string]any{
-		"type":    "state",
-		"rooms":   h.maze.Rooms,
-		"grid":    flat,
-		"players": players,
+		"type":     "state",
+		"started":  h.started,
+		"rooms":    h.maze.Rooms,
+		"grid":     flat,
+		"players":  players,
+		"rankings": h.rankings,
 	})
 }
 
 func (h *Hub) broadcastWin(playerID string, elapsed time.Duration) {
 	msg, _ := json.Marshal(map[string]any{
-		"type":    "win",
-		"player":  playerID,
-		"elapsed": elapsed.Milliseconds(),
+		"type":     "win",
+		"player":   playerID,
+		"elapsed":  elapsed.Milliseconds(),
+		"rankings": h.rankings,
 	})
-	// notify the winner
 	if p, ok := h.players[playerID]; ok {
 		p.send <- msg
 	}
-	// notify all spectators
 	for s := range h.spectators {
 		select {
 		case s.send <- msg:
 		default:
 		}
 	}
-	log.Printf("player %s won!", playerID)
+	log.Printf("player %s won in %dms", playerID, elapsed.Milliseconds())
 }
 
 func (h *Hub) broadcastSpectatorState() {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 
 	"github.com/gorilla/websocket"
@@ -27,9 +28,27 @@ func (s *Spectator) ReadPump(hub *Hub) {
 		s.conn.Close()
 	}()
 	for {
-		// spectators are read-only; drain any incoming messages and discard
-		if _, _, err := s.conn.ReadMessage(); err != nil {
+		_, raw, err := s.conn.ReadMessage()
+		if err != nil {
 			break
+		}
+		var msg struct {
+			Cmd string `json:"cmd"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		switch msg.Cmd {
+		case "start":
+			select {
+			case hub.startGame <- struct{}{}:
+			default:
+			}
+		case "restart":
+			select {
+			case hub.restartGame <- struct{}{}:
+			default:
+			}
 		}
 	}
 }

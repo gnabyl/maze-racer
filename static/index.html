@@ -4,46 +4,102 @@
   <meta charset="UTF-8">
   <title>Maze Runner — Spectator</title>
   <style>
-    body { background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; font-family: monospace; color: #eee; }
-    canvas { border: 2px solid #333; }
-    #status { margin-top: 12px; font-size: 14px; color: #888; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #111; color: #eee; font-family: monospace; display: flex; flex-direction: column; align-items: center; padding: 24px; gap: 16px; }
+    h1 { font-size: 18px; letter-spacing: 2px; color: #aaa; }
+    #controls { display: flex; align-items: center; gap: 16px; }
+    #start-btn { padding: 8px 24px; background: #2a2; color: #fff; border: none; font-family: monospace; font-size: 14px; cursor: pointer; border-radius: 3px; }
+    #start-btn:disabled { background: #444; cursor: default; }
+    #restart-btn { padding: 8px 24px; background: #a42; color: #fff; border: none; font-family: monospace; font-size: 14px; cursor: pointer; border-radius: 3px; }
+    #status { font-size: 13px; color: #888; }
+    #layout { display: flex; gap: 24px; align-items: flex-start; }
+    canvas { border: 2px solid #333; flex-shrink: 0; }
+    #sidebar { width: 220px; display: flex; flex-direction: column; gap: 16px; }
+    .panel { background: #1a1a1a; border: 1px solid #333; padding: 12px; }
+    .panel h2 { font-size: 12px; color: #666; margin-bottom: 8px; letter-spacing: 1px; }
+    .player-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .rank-row { display: flex; gap: 8px; font-size: 13px; padding: 3px 0; }
+    .rank-num { color: #ffd700; width: 20px; }
+    .rank-time { color: #888; margin-left: auto; }
+    .won-badge { color: #ffd700; font-size: 10px; margin-left: auto; }
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div id="status">connecting…</div>
+  <h1>MAZE RUNNER</h1>
+  <div id="controls">
+    <button id="start-btn" disabled>START GAME</button>
+    <button id="restart-btn">RESTART</button>
+    <div id="status">connecting…</div>
+  </div>
+  <div id="layout">
+    <canvas id="c"></canvas>
+    <div id="sidebar">
+      <div class="panel">
+        <h2>PLAYERS</h2>
+        <div id="player-list"></div>
+      </div>
+      <div class="panel">
+        <h2>RANKINGS</h2>
+        <div id="rankings"></div>
+      </div>
+    </div>
+  </div>
 
   <script>
-    const CELL = 40;       // px per room
-    const STROKE = 3;      // wall stroke width
-    const WALL_N = 1, WALL_S = 2, WALL_E = 4, WALL_W = 8, BIT_FLAG = 16;
+    const CELL = 36;
+    const STROKE = 2;
+    const WALL_UP = 1, WALL_DOWN = 2, WALL_RIGHT = 4, WALL_LEFT = 8, BIT_FLAG = 16;
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const status = document.getElementById('status');
+    const startBtn = document.getElementById('start-btn');
+    const playerList = document.getElementById('player-list');
+    const rankingsEl = document.getElementById('rankings');
 
     let state = null;
 
     const ws = new WebSocket(`ws://${location.host}/spectate`);
-
-    ws.onopen = () => status.textContent = 'connected — waiting for maze…';
-    ws.onclose = () => status.textContent = 'disconnected';
+    ws.onopen = () => status.textContent = 'connected — waiting for players…';
+    ws.onclose = () => { status.textContent = 'disconnected'; startBtn.disabled = true; };
     ws.onerror = () => status.textContent = 'connection error';
 
     ws.onmessage = e => {
       const msg = JSON.parse(e.data);
+
       if (msg.type === 'win') {
-        status.textContent = `🏆 ${msg.player} won!`;
-        if (state) render(state); // redraw current state
+        status.textContent = `${msg.player} won in ${(msg.elapsed / 1000).toFixed(2)}s!`;
+        renderRankings(msg.rankings);
         return;
       }
+
+      if (msg.type !== 'state') return;
       state = msg;
-      render(state);
-      const count = state.players.length;
-      status.textContent = `${count} player${count !== 1 ? 's' : ''} connected`;
+
+      const started = msg.started;
+      startBtn.disabled = started || ws.readyState !== WebSocket.OPEN;
+      status.textContent = started
+        ? `game running — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''}`
+        : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
+
+      renderMaze(msg);
+      renderPlayerList(msg.players);
+      renderRankings(msg.rankings);
     };
 
-    function render({ rooms, grid, players }) {
+    const restartBtn = document.getElementById('restart-btn');
+
+    startBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ cmd: 'start' }));
+      startBtn.disabled = true;
+    });
+
+    restartBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ cmd: 'restart' }));
+    });
+
+    function renderMaze({ rooms, grid, players }) {
       const size = rooms * CELL;
       canvas.width = size;
       canvas.height = size;
@@ -51,69 +107,94 @@
       ctx.fillStyle = '#1a1a1a';
       ctx.fillRect(0, 0, size, size);
 
-      // draw each room
       for (let r = 0; r < rooms; r++) {
         for (let c = 0; c < rooms; c++) {
           const cell = grid[r * rooms + c];
-          const x = c * CELL;
-          const y = r * CELL;
+          const x = c * CELL, y = r * CELL;
 
           ctx.strokeStyle = '#555';
           ctx.lineWidth = STROKE;
           ctx.lineCap = 'square';
 
-          if (cell & WALL_N) drawLine(ctx, x, y, x + CELL, y);
-          if (cell & WALL_S) drawLine(ctx, x, y + CELL, x + CELL, y + CELL);
-          if (cell & WALL_E) drawLine(ctx, x + CELL, y, x + CELL, y + CELL);
-          if (cell & WALL_W) drawLine(ctx, x, y, x, y + CELL);
-
-          if (cell & BIT_FLAG) drawFlag(ctx, x + CELL / 2, y + CELL / 2);
+          if (cell & WALL_UP)    line(x, y, x + CELL, y);
+          if (cell & WALL_DOWN)  line(x, y + CELL, x + CELL, y + CELL);
+          if (cell & WALL_RIGHT) line(x + CELL, y, x + CELL, y + CELL);
+          if (cell & WALL_LEFT)  line(x, y, x, y + CELL);
+          if (cell & BIT_FLAG)   drawFlag(x + CELL / 2, y + CELL / 2);
         }
       }
 
-      // draw flag
-      // draw players
-      players.forEach((p) => {
+      players.forEach(p => {
         const x = p.pos.c * CELL + CELL / 2;
         const y = p.pos.r * CELL + CELL / 2;
         const color = playerColor(p.id);
 
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
-        ctx.fillStyle = color;
+        ctx.fillStyle = p.won ? '#ffd700' : color;
         ctx.fill();
 
-        // player label
         ctx.fillStyle = '#111';
-        ctx.font = `bold ${CELL * 0.28}px monospace`;
+        ctx.font = `bold ${Math.floor(CELL * 0.28)}px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(p.id[0].toUpperCase(), x, y);
       });
     }
 
+    function renderPlayerList(players) {
+      playerList.innerHTML = '';
+      players = [...players].sort((a, b) => a.id.localeCompare(b.id));
+      if (!players.length) {
+        playerList.innerHTML = '<div style="color:#555;font-size:12px">none yet</div>';
+        return;
+      }
+      players.forEach(p => {
+        const row = document.createElement('div');
+        row.className = 'player-row';
+        row.innerHTML = `
+          <div class="dot" style="background:${playerColor(p.id)}"></div>
+          <span>${p.id}</span>
+          ${p.won ? '<span class="won-badge">✓ won</span>' : ''}
+        `;
+        playerList.appendChild(row);
+      });
+    }
+
+    function renderRankings(rankings) {
+      rankingsEl.innerHTML = '';
+      if (!rankings || !rankings.length) {
+        rankingsEl.innerHTML = '<div style="color:#555;font-size:12px">none yet</div>';
+        return;
+      }
+      rankings.forEach(r => {
+        const row = document.createElement('div');
+        row.className = 'rank-row';
+        row.innerHTML = `
+          <span class="rank-num">#${r.rank}</span>
+          <div class="dot" style="background:${playerColor(r.id)}"></div>
+          <span>${r.id}</span>
+          <span class="rank-time">${(r.elapsed_ms / 1000).toFixed(2)}s</span>
+        `;
+        rankingsEl.appendChild(row);
+      });
+    }
+
     function playerColor(id) {
-      // hash id to a hue, use fixed saturation/lightness for readability
       let hash = 0;
       for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
       return `hsl(${hash % 360}, 80%, 65%)`;
     }
 
-    function drawLine(ctx, x1, y1, x2, y2) {
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
+    function line(x1, y1, x2, y2) {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
     }
 
-    function drawFlag(ctx, x, y) {
+    function drawFlag(x, y) {
       const r = CELL * 0.22;
-      // gold diamond
       ctx.beginPath();
-      ctx.moveTo(x, y - r);
-      ctx.lineTo(x + r, y);
-      ctx.lineTo(x, y + r);
-      ctx.lineTo(x - r, y);
+      ctx.moveTo(x, y - r); ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
       ctx.closePath();
       ctx.fillStyle = '#ffd700';
       ctx.fill();

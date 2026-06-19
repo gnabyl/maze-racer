@@ -56,8 +56,11 @@ func main() {
 		}
 
 		p.send <- []byte(fmt.Sprintf(`{"type":"welcome","player_id":%q}`, playerID))
-		p.send <- hub.playerState(p)
-		hub.broadcastSpectatorState()
+		if hub.started {
+			p.send <- hub.playerState(p)
+		} else {
+			p.send <- []byte(`{"type":"waiting"}`)
+		}
 
 		go p.WritePump()
 		p.ReadPump()

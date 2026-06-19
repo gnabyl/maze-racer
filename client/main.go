@@ -63,8 +63,10 @@ func main() {
 			Fog  []int  `json:"fog"`
 		}
 		if err := json.Unmarshal(msg, &resp); err != nil || resp.Type != "state" {
+			log.Printf("recv: %s", msg)
 			continue
 		}
+		log.Printf("state: pos received, fog[12]=%d", resp.Fog[12])
 
 		moves := validMoves(resp.Fog)
 		if len(moves) == 0 {
