@@ -83,7 +83,7 @@
       const msg = JSON.parse(e.data);
 
       if (msg.type === 'win') {
-        status.textContent = `${msg.player} won in ${(msg.elapsed / 1000).toFixed(2)}s!`;
+        status.textContent = `${msg.player} won in ${msg.moves} moves!`;
         renderRankings(msg.rankings);
         return;
       }
@@ -117,15 +117,14 @@
         seen.add(p.id);
         const anim = playerAnims[p.id];
         if (!anim) {
-          // new player: snap to position
-          playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won };
+          playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won, connected: p.connected };
         } else if (anim.to.r !== p.pos.r || anim.to.c !== p.pos.c) {
-          // position changed: animate from current interpolated position
           const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
           const cur = { r: lerp(anim.from.r, anim.to.r, t), c: lerp(anim.from.c, anim.to.c, t) };
-          playerAnims[p.id] = { from: cur, to: p.pos, startMs: now, won: p.won };
+          playerAnims[p.id] = { from: cur, to: p.pos, startMs: now, won: p.won, connected: p.connected };
         } else {
           anim.won = p.won;
+          anim.connected = p.connected;
         }
       });
       // remove disconnected players
@@ -184,7 +183,9 @@
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
         ctx.fillStyle = anim.won ? '#ffd700' : color;
+        ctx.globalAlpha = anim.connected ? 1 : 0.35;
         ctx.fill();
+        ctx.globalAlpha = 1;
 
         ctx.fillStyle = '#111';
         ctx.font = `bold ${Math.floor(CELL * 0.28)}px monospace`;
@@ -208,10 +209,13 @@
       players.forEach(p => {
         const row = document.createElement('div');
         row.className = 'player-row';
+        const connDot = p.connected ? '#4c4' : '#844';
         row.innerHTML = `
           <div class="dot" style="background:${playerColor(p.id)}"></div>
-          <span>${p.id}</span>
-          ${p.won ? '<span class="won-badge">✓ won</span>' : ''}
+          <span style="flex:1">${p.id}</span>
+          <span style="color:#666;font-size:11px">${p.moves}m</span>
+          <div class="dot" style="background:${connDot}" title="${p.connected ? 'online' : 'offline'}"></div>
+          ${p.won ? '<span class="won-badge">✓</span>' : ''}
         `;
         playerList.appendChild(row);
       });
@@ -230,7 +234,7 @@
           <span class="rank-num">#${r.rank}</span>
           <div class="dot" style="background:${playerColor(r.id)}"></div>
           <span>${r.id}</span>
-          <span class="rank-time">${(r.elapsed_ms / 1000).toFixed(2)}s</span>
+          <span class="rank-time">${r.moves} moves</span>
         `;
         rankingsEl.appendChild(row);
       });

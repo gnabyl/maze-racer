@@ -10,13 +10,16 @@ import (
 )
 
 type Player struct {
-	id          string
-	conn        *websocket.Conn
-	hub         *Hub
-	send        chan []byte
-	pos         Pos
-	won         bool
-	joinedAt    time.Time
+	id        string
+	conn      *websocket.Conn
+	hub       *Hub
+	send      chan []byte
+	pos       Pos
+	won       bool
+	connected bool
+	moves     int
+	joinedAt  time.Time
+
 	pendingMove atomic.Pointer[string] // latest move, nil if none queued
 }
 
@@ -24,7 +27,6 @@ func (p *Player) queueMove(dir string) {
 	p.pendingMove.Store(&dir)
 }
 
-// popMove returns the queued move and clears it, or "" if none.
 func (p *Player) popMove() string {
 	ptr := p.pendingMove.Swap(nil)
 	if ptr == nil {

@@ -6,17 +6,25 @@ import (
 	"log"
 	"math/rand"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-type joinRequest struct {
+type joinResult struct {
 	player *Player
-	result chan error
+	err    error
+}
+
+type joinRequest struct {
+	id   string
+	conn *websocket.Conn
+	result chan joinResult
 }
 
 type rankEntry struct {
-	Rank    int    `json:"rank"`
-	ID      string `json:"id"`
-	Elapsed int64  `json:"elapsed_ms"`
+	Rank  int    `json:"rank"`
+	ID    string `json:"id"`
+	Moves int    `json:"moves"`
 }
 
 type Hub struct {
@@ -61,21 +69,38 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case req := <-h.join:
-			p := req.player
-			if _, exists := h.players[p.id]; exists {
-				req.result <- fmt.Errorf("player id %q already connected", p.id)
-				continue
+			if existing, ok := h.players[req.id]; ok {
+				if existing.connected {
+					req.result <- joinResult{err: fmt.Errorf("player id %q already connected", req.id)}
+					continue
+				}
+				// reconnect: restore state with new connection
+				existing.conn = req.conn
+				existing.send = make(chan []byte, 16)
+				existing.connected = true
+				existing.pendingMove.Store(nil)
+				req.result <- joinResult{player: existing}
+				log.Printf("player reconnected: %s", req.id)
+			} else {
+				p := &Player{
+					id:        req.id,
+					conn:      req.conn,
+					hub:       h,
+					send:      make(chan []byte, 16),
+					pos:       h.maze.Start,
+					connected: true,
+				}
+				h.players[req.id] = p
+				req.result <- joinResult{player: p}
+				log.Printf("player joined: %s (total: %d)", req.id, len(h.players))
 			}
-			h.players[p.id] = p
-			req.result <- nil
-			log.Printf("player joined: %s (total: %d)", p.id, len(h.players))
 			h.broadcastSpectatorState()
 
 		case p := <-h.leave:
 			if current, ok := h.players[p.id]; ok && current == p {
-				delete(h.players, p.id)
+				p.connected = false
 				close(p.send)
-				log.Printf("player left: %s (total: %d)", p.id, len(h.players))
+				log.Printf("player disconnected: %s", p.id)
 				h.broadcastSpectatorState()
 			}
 
@@ -89,6 +114,7 @@ func (h *Hub) Run() {
 			for _, p := range h.players {
 				p.joinedAt = now
 				p.won = false
+				p.moves = 0
 				p.pos = h.maze.Start
 				p.send <- h.playerState(p)
 			}
@@ -108,6 +134,7 @@ func (h *Hub) Run() {
 			h.rankings = nil
 			for _, p := range h.players {
 				p.won = false
+				p.moves = 0
 				p.pos = h.maze.Start
 				p.pendingMove.Store(nil)
 				p.send <- []byte(`{"type":"waiting"}`)
@@ -140,7 +167,7 @@ func (h *Hub) Run() {
 func (h *Hub) tick() {
 	moved := false
 	for _, p := range h.players {
-		if p.won {
+		if p.won || !p.connected {
 			continue
 		}
 		dir := p.popMove()
@@ -160,18 +187,18 @@ func (h *Hub) tick() {
 		}
 		p.pos.R += d.dr
 		p.pos.C += d.dc
+		p.moves++
 		p.send <- h.playerState(p)
 		moved = true
 
 		if p.pos == h.maze.Flag {
 			p.won = true
-			elapsed := time.Since(p.joinedAt)
 			h.rankings = append(h.rankings, rankEntry{
-				Rank:    len(h.rankings) + 1,
-				ID:      p.id,
-				Elapsed: elapsed.Milliseconds(),
+				Rank:  len(h.rankings) + 1,
+				ID:    p.id,
+				Moves: p.moves,
 			})
-			h.broadcastWin(p.id, elapsed)
+			h.broadcastWin(p.id, p.moves)
 		}
 	}
 	if moved {
@@ -179,10 +206,11 @@ func (h *Hub) tick() {
 	}
 }
 
-func (h *Hub) Join(p *Player) error {
-	result := make(chan error, 1)
-	h.join <- joinRequest{player: p, result: result}
-	return <-result
+func (h *Hub) Join(id string, conn *websocket.Conn) (*Player, error) {
+	result := make(chan joinResult, 1)
+	h.join <- joinRequest{id: id, conn: conn, result: result}
+	res := <-result
+	return res.player, res.err
 }
 
 func (h *Hub) playerState(p *Player) []byte {
@@ -209,13 +237,18 @@ func (h *Hub) spectatorState() ([]byte, error) {
 	}
 
 	type playerInfo struct {
-		ID  string `json:"id"`
-		Pos Pos    `json:"pos"`
-		Won bool   `json:"won"`
+		ID        string `json:"id"`
+		Pos       Pos    `json:"pos"`
+		Won       bool   `json:"won"`
+		Connected bool   `json:"connected"`
+		Moves     int    `json:"moves"`
 	}
 	players := make([]playerInfo, 0, len(h.players))
 	for _, p := range h.players {
-		players = append(players, playerInfo{ID: p.id, Pos: p.pos, Won: p.won})
+		players = append(players, playerInfo{
+			ID: p.id, Pos: p.pos, Won: p.won,
+			Connected: p.connected, Moves: p.moves,
+		})
 	}
 
 	return json.Marshal(map[string]any{
@@ -229,11 +262,11 @@ func (h *Hub) spectatorState() ([]byte, error) {
 	})
 }
 
-func (h *Hub) broadcastWin(playerID string, elapsed time.Duration) {
+func (h *Hub) broadcastWin(playerID string, moves int) {
 	msg, _ := json.Marshal(map[string]any{
 		"type":     "win",
 		"player":   playerID,
-		"elapsed":  elapsed.Milliseconds(),
+		"moves":    moves,
 		"rankings": h.rankings,
 	})
 	if p, ok := h.players[playerID]; ok {
@@ -245,7 +278,7 @@ func (h *Hub) broadcastWin(playerID string, elapsed time.Duration) {
 		default:
 		}
 	}
-	log.Printf("player %s won in %dms", playerID, elapsed.Milliseconds())
+	log.Printf("player %s won in %d moves", playerID, moves)
 }
 
 func (h *Hub) broadcastSpectatorState() {

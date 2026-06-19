@@ -40,21 +40,14 @@ func main() {
 			return
 		}
 
-		p := &Player{
-			id:       playerID,
-			conn:     conn,
-			hub:      hub,
-			send:     make(chan []byte, 16),
-			pos:      hub.maze.Start,
-			joinedAt: time.Now(),
-		}
-
-		if err := hub.Join(p); err != nil {
+		p, err := hub.Join(playerID, conn)
+		if err != nil {
 			conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"error","msg":%q}`, err.Error())))
 			conn.Close()
 			return
 		}
 
+		p.hub = hub
 		p.send <- []byte(fmt.Sprintf(`{"type":"welcome","player_id":%q}`, playerID))
 		if hub.started {
 			p.send <- hub.playerState(p)
