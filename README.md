@@ -3,6 +3,8 @@
 Write a bot (any language) that connects to the maze server, navigates a
 fog-of-war maze, and reaches the flag in the fewest moves.
 
+![demo](docs/demo.gif)
+
 ## Goal
 
 All players spawn at the **same start cell**. Somewhere in the maze is a
