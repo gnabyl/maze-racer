@@ -67,11 +67,10 @@
 
       // draw flag
       // draw players
-      const colors = ['#4fc', '#f94', '#f4f', '#4af', '#ff4'];
-      players.forEach((p, i) => {
+      players.forEach((p) => {
         const x = p.pos.c * CELL + CELL / 2;
         const y = p.pos.r * CELL + CELL / 2;
-        const color = colors[i % colors.length];
+        const color = playerColor(p.id);
 
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
@@ -85,6 +84,13 @@
         ctx.textBaseline = 'middle';
         ctx.fillText(p.id[0].toUpperCase(), x, y);
       });
+    }
+
+    function playerColor(id) {
+      // hash id to a hue, use fixed saturation/lightness for readability
+      let hash = 0;
+      for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+      return `hsl(${hash % 360}, 80%, 65%)`;
     }
 
     function drawLine(ctx, x1, y1, x2, y2) {
