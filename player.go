@@ -11,6 +11,7 @@ type Player struct {
 	conn *websocket.Conn
 	hub  *Hub
 	send chan []byte
+	pos  Pos
 }
 
 func (p *Player) ReadPump() {

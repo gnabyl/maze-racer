@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Maze Runner — Spectator</title>
+  <style>
+    body { background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; font-family: monospace; color: #eee; }
+    canvas { border: 2px solid #333; }
+    #status { margin-top: 12px; font-size: 14px; color: #888; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="status">connecting…</div>
+
+  <script>
+    const CELL = 40;       // px per room
+    const STROKE = 3;      // wall stroke width
+    const WALL_N = 1, WALL_S = 2, WALL_E = 4, WALL_W = 8, BIT_FLAG = 16;
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const status = document.getElementById('status');
+
+    let state = null;
+
+    const ws = new WebSocket(`ws://${location.host}/spectate`);
+
+    ws.onopen = () => status.textContent = 'connected — waiting for maze…';
+    ws.onclose = () => status.textContent = 'disconnected';
+    ws.onerror = () => status.textContent = 'connection error';
+
+    ws.onmessage = e => {
+      state = JSON.parse(e.data);
+      render(state);
+      const count = state.players.length;
+      status.textContent = `${count} player${count !== 1 ? 's' : ''} connected`;
+    };
+
+    function render({ rooms, grid, players }) {
+      const size = rooms * CELL;
+      canvas.width = size;
+      canvas.height = size;
+
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, size, size);
+
+      // draw each room
+      for (let r = 0; r < rooms; r++) {
+        for (let c = 0; c < rooms; c++) {
+          const cell = grid[r * rooms + c];
+          const x = c * CELL;
+          const y = r * CELL;
+
+          ctx.strokeStyle = '#555';
+          ctx.lineWidth = STROKE;
+          ctx.lineCap = 'square';
+
+          if (cell & WALL_N) drawLine(ctx, x, y, x + CELL, y);
+          if (cell & WALL_S) drawLine(ctx, x, y + CELL, x + CELL, y + CELL);
+          if (cell & WALL_E) drawLine(ctx, x + CELL, y, x + CELL, y + CELL);
+          if (cell & WALL_W) drawLine(ctx, x, y, x, y + CELL);
+
+          if (cell & BIT_FLAG) drawFlag(ctx, x + CELL / 2, y + CELL / 2);
+        }
+      }
+
+      // draw flag
+      // draw players
+      const colors = ['#4fc', '#f94', '#f4f', '#4af', '#ff4'];
+      players.forEach((p, i) => {
+        const x = p.pos.c * CELL + CELL / 2;
+        const y = p.pos.r * CELL + CELL / 2;
+        const color = colors[i % colors.length];
+
+        ctx.beginPath();
+        ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        // player label
+        ctx.fillStyle = '#111';
+        ctx.font = `bold ${CELL * 0.28}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.id[0].toUpperCase(), x, y);
+      });
+    }
+
+    function drawLine(ctx, x1, y1, x2, y2) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    function drawFlag(ctx, x, y) {
+      const r = CELL * 0.22;
+      // gold diamond
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.fillStyle = '#ffd700';
+      ctx.fill();
+    }
+  </script>
+</body>
+</html>

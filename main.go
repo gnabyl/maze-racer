@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -13,9 +14,11 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	hub := NewHub()
+	rng := rand.New(rand.NewSource(42))
+	hub := NewHub(MazeConfig{Rooms: 15, ExtraPass: 0.1}, rng)
 	go hub.Run()
 
+	// player connection: /join/{id}
 	http.HandleFunc("/join/{id}", func(w http.ResponseWriter, r *http.Request) {
 		playerID := r.PathValue("id")
 		if playerID == "" {
@@ -34,6 +37,7 @@ func main() {
 			conn: conn,
 			hub:  hub,
 			send: make(chan []byte, 16),
+			pos:  hub.maze.Start,
 		}
 
 		if err := hub.Join(p); err != nil {
@@ -43,10 +47,32 @@ func main() {
 		}
 
 		p.send <- []byte(fmt.Sprintf(`{"type":"welcome","player_id":%q}`, playerID))
+		hub.broadcastSpectatorState()
 
 		go p.WritePump()
 		p.ReadPump()
 	})
+
+	// spectator connection: /spectate
+	http.HandleFunc("/spectate", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("spectator upgrade error: %v", err)
+			return
+		}
+
+		s := &Spectator{
+			conn: conn,
+			send: make(chan []byte, 64),
+		}
+
+		hub.joinSpectator <- s
+		go s.WritePump()
+		s.ReadPump(hub)
+	})
+
+	// serve spectator UI
+	http.Handle("/", http.FileServer(http.Dir("static")))
 
 	log.Println("server listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
