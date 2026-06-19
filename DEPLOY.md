@@ -39,6 +39,21 @@ committed here.
    done
    ```
 
+## Quick deploy (script)
+
+`deploy.sh` does build → copy → install/restart in one shot (first-time and
+redeploy). It writes the systemd unit with the admin password each run.
+
+```bash
+MAZE_HOST=<PUBLIC_IP> MAZE_KEY=~/path/to/<KEY>.pem ./deploy.sh
+# prompts for the admin password (hidden), or pass MAZE_ADMIN_PASS in env
+```
+
+Optional env: `MAZE_USER` (default `ec2-user`), `MAZE_ROOMS` (20), `MAZE_TICK`
+(300), `GOARCH` (`amd64`, use `arm64` for Graviton).
+
+The manual steps below are the same thing broken out, for reference.
+
 ## Build
 
 Single static binary, UI embedded via `go:embed`. Match the instance arch
