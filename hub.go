@@ -32,7 +32,7 @@ type Hub struct {
 	join           chan joinRequest
 	leave          chan *Player
 	startGame      chan struct{}
-	restartGame    chan struct{}
+	restartGame    chan restartRequest
 	joinSpectator  chan *Spectator
 	leaveSpectator chan *Spectator
 }
@@ -48,7 +48,7 @@ func NewHub(cfg MazeConfig, rng *rand.Rand, tickRate time.Duration) *Hub {
 		join:           make(chan joinRequest),
 		leave:          make(chan *Player),
 		startGame:      make(chan struct{}, 1),
-		restartGame:    make(chan struct{}, 1),
+		restartGame:    make(chan restartRequest, 1),
 		joinSpectator:  make(chan *Spectator),
 		leaveSpectator: make(chan *Spectator),
 	}
@@ -95,7 +95,14 @@ func (h *Hub) Run() {
 			h.broadcastSpectatorState()
 			log.Printf("game started with %d players", len(h.players))
 
-		case <-h.restartGame:
+		case req := <-h.restartGame:
+			if req.Rooms > 0 {
+				h.cfg.Rooms = req.Rooms
+			}
+			if req.Tick > 0 {
+				h.tickRate = time.Duration(req.Tick) * time.Millisecond
+				ticker.Reset(h.tickRate)
+			}
 			h.maze = GenerateMaze(h.cfg, h.rng)
 			h.started = false
 			h.rankings = nil
@@ -106,7 +113,7 @@ func (h *Hub) Run() {
 				p.send <- []byte(`{"type":"waiting"}`)
 			}
 			h.broadcastSpectatorState()
-			log.Printf("game restarted")
+			log.Printf("game restarted: rooms=%d tick=%s", h.cfg.Rooms, h.tickRate)
 
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
@@ -215,6 +222,7 @@ func (h *Hub) spectatorState() ([]byte, error) {
 		"type":     "state",
 		"started":  h.started,
 		"rooms":    h.maze.Rooms,
+		"tick_ms":  h.tickRate.Milliseconds(),
 		"grid":     flat,
 		"players":  players,
 		"rankings": h.rankings,

@@ -12,6 +12,11 @@ type Spectator struct {
 	send chan []byte
 }
 
+type restartRequest struct {
+	Rooms int `json:"rooms"`
+	Tick  int `json:"tick"` // ms
+}
+
 func (s *Spectator) WritePump() {
 	defer s.conn.Close()
 	for msg := range s.send {
@@ -33,7 +38,9 @@ func (s *Spectator) ReadPump(hub *Hub) {
 			break
 		}
 		var msg struct {
-			Cmd string `json:"cmd"`
+			Cmd   string `json:"cmd"`
+			Rooms int    `json:"rooms"`
+			Tick  int    `json:"tick"`
 		}
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			continue
@@ -45,8 +52,9 @@ func (s *Spectator) ReadPump(hub *Hub) {
 			default:
 			}
 		case "restart":
+			req := restartRequest{Rooms: msg.Rooms, Tick: msg.Tick}
 			select {
-			case hub.restartGame <- struct{}{}:
+			case hub.restartGame <- req:
 			default:
 			}
 		}

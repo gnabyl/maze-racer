@@ -12,6 +12,9 @@
     #start-btn:disabled { background: #444; cursor: default; }
     #restart-btn { padding: 8px 24px; background: #a42; color: #fff; border: none; font-family: monospace; font-size: 14px; cursor: pointer; border-radius: 3px; }
     #status { font-size: 13px; color: #888; }
+    .param-group { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .param-group label { color: #888; }
+    .param-group input { width: 56px; background: #222; border: 1px solid #444; color: #eee; font-family: monospace; font-size: 13px; padding: 4px 6px; border-radius: 3px; }
     #layout { display: flex; gap: 24px; align-items: flex-start; }
     canvas { border: 2px solid #333; flex-shrink: 0; }
     #sidebar { width: 220px; display: flex; flex-direction: column; gap: 16px; }
@@ -30,6 +33,8 @@
   <div id="controls">
     <button id="start-btn" disabled>START GAME</button>
     <button id="restart-btn">RESTART</button>
+    <div class="param-group"><label>rooms</label><input id="inp-rooms" type="number" min="5" max="50" value="15"></div>
+    <div class="param-group"><label>tick ms</label><input id="inp-tick" type="number" min="50" max="2000" value="300"></div>
     <div id="status">connecting…</div>
   </div>
   <div id="layout">
@@ -49,16 +54,25 @@
   <script>
     const CELL = 36;
     const STROKE = 2;
+    let ANIM_MS = 200; // derived from server tick rate
     const WALL_UP = 1, WALL_DOWN = 2, WALL_RIGHT = 4, WALL_LEFT = 8, BIT_FLAG = 16;
 
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     const status = document.getElementById('status');
     const startBtn = document.getElementById('start-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const inpRooms = document.getElementById('inp-rooms');
+    const inpTick = document.getElementById('inp-tick');
     const playerList = document.getElementById('player-list');
     const rankingsEl = document.getElementById('rankings');
 
-    let state = null;
+    let grid = null;
+    let rooms = 0;
+
+    // per-player animation state keyed by id
+    // { from: {r,c}, to: {r,c}, startMs: number, won: bool }
+    const playerAnims = {};
 
     const ws = new WebSocket(`ws://${location.host}/spectate`);
     ws.onopen = () => status.textContent = 'connected — waiting for players…';
@@ -75,7 +89,6 @@
       }
 
       if (msg.type !== 'state') return;
-      state = msg;
 
       const started = msg.started;
       startBtn.disabled = started || ws.readyState !== WebSocket.OPEN;
@@ -83,12 +96,44 @@
         ? `game running — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''}`
         : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
 
-      renderMaze(msg);
+      // derive animation duration from tick rate
+      if (msg.tick_ms) {
+        ANIM_MS = Math.floor(msg.tick_ms * 0.7);
+        inpTick.value = msg.tick_ms;
+        inpRooms.value = msg.rooms;
+      }
+
+      // update grid (static, only changes on restart)
+      if (msg.rooms !== rooms) {
+        rooms = msg.rooms;
+        canvas.width = canvas.height = rooms * CELL;
+      }
+      grid = msg.grid;
+
+      // update animation targets per player
+      const now = performance.now();
+      const seen = new Set();
+      msg.players.forEach(p => {
+        seen.add(p.id);
+        const anim = playerAnims[p.id];
+        if (!anim) {
+          // new player: snap to position
+          playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won };
+        } else if (anim.to.r !== p.pos.r || anim.to.c !== p.pos.c) {
+          // position changed: animate from current interpolated position
+          const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
+          const cur = { r: lerp(anim.from.r, anim.to.r, t), c: lerp(anim.from.c, anim.to.c, t) };
+          playerAnims[p.id] = { from: cur, to: p.pos, startMs: now, won: p.won };
+        } else {
+          anim.won = p.won;
+        }
+      });
+      // remove disconnected players
+      Object.keys(playerAnims).forEach(id => { if (!seen.has(id)) delete playerAnims[id]; });
+
       renderPlayerList(msg.players);
       renderRankings(msg.rankings);
     };
-
-    const restartBtn = document.getElementById('restart-btn');
 
     startBtn.addEventListener('click', () => {
       ws.send(JSON.stringify({ cmd: 'start' }));
@@ -96,26 +141,29 @@
     });
 
     restartBtn.addEventListener('click', () => {
-      ws.send(JSON.stringify({ cmd: 'restart' }));
+      ws.send(JSON.stringify({
+        cmd: 'restart',
+        rooms: parseInt(inpRooms.value) || 15,
+        tick: parseInt(inpTick.value) || 300,
+      }));
     });
 
-    function renderMaze({ rooms, grid, players }) {
-      const size = rooms * CELL;
-      canvas.width = size;
-      canvas.height = size;
+    // animation loop
+    function frame(now) {
+      requestAnimationFrame(frame);
+      if (!grid) return;
 
       ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(0, 0, size, size);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      // draw static maze
       for (let r = 0; r < rooms; r++) {
         for (let c = 0; c < rooms; c++) {
           const cell = grid[r * rooms + c];
           const x = c * CELL, y = r * CELL;
-
           ctx.strokeStyle = '#555';
           ctx.lineWidth = STROKE;
           ctx.lineCap = 'square';
-
           if (cell & WALL_UP)    line(x, y, x + CELL, y);
           if (cell & WALL_DOWN)  line(x, y + CELL, x + CELL, y + CELL);
           if (cell & WALL_RIGHT) line(x + CELL, y, x + CELL, y + CELL);
@@ -124,23 +172,31 @@
         }
       }
 
-      players.forEach(p => {
-        const x = p.pos.c * CELL + CELL / 2;
-        const y = p.pos.r * CELL + CELL / 2;
-        const color = playerColor(p.id);
+      // draw animated players
+      Object.entries(playerAnims).forEach(([id, anim]) => {
+        const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
+        const r = lerp(anim.from.r, anim.to.r, t);
+        const c = lerp(anim.from.c, anim.to.c, t);
+        const x = c * CELL + CELL / 2;
+        const y = r * CELL + CELL / 2;
+        const color = playerColor(id);
 
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
-        ctx.fillStyle = p.won ? '#ffd700' : color;
+        ctx.fillStyle = anim.won ? '#ffd700' : color;
         ctx.fill();
 
         ctx.fillStyle = '#111';
         ctx.font = `bold ${Math.floor(CELL * 0.28)}px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(p.id[0].toUpperCase(), x, y);
+        ctx.fillText(id[0].toUpperCase(), x, y);
       });
     }
+    requestAnimationFrame(frame);
+
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function ease(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; } // ease in-out quad
 
     function renderPlayerList(players) {
       playerList.innerHTML = '';
