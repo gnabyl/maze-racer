@@ -31,7 +31,13 @@
     ws.onerror = () => status.textContent = 'connection error';
 
     ws.onmessage = e => {
-      state = JSON.parse(e.data);
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'win') {
+        status.textContent = `🏆 ${msg.player} won!`;
+        if (state) render(state); // redraw current state
+        return;
+      }
+      state = msg;
       render(state);
       const count = state.players.length;
       status.textContent = `${count} player${count !== 1 ? 's' : ''} connected`;

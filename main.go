@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -15,8 +16,14 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
+	rooms    := flag.Int("rooms", 15, "maze size (number of rooms per side)")
+	extraPass := flag.Float64("extra", 0.1, "fraction of extra passages (0.0-1.0)")
+	tickMs   := flag.Int("tick", 300, "tick rate in milliseconds")
+	flag.Parse()
+
 	rng := rand.New(rand.NewSource(42))
-	hub := NewHub(MazeConfig{Rooms: 15, ExtraPass: 0.1}, rng, 300*time.Millisecond)
+	hub := NewHub(MazeConfig{Rooms: *rooms, ExtraPass: *extraPass}, rng, time.Duration(*tickMs)*time.Millisecond)
+	log.Printf("maze: %dx%d rooms, extra=%.2f, tick=%dms", *rooms, *rooms, *extraPass, *tickMs)
 	go hub.Run()
 
 	// player connection: /join/{id}
@@ -34,11 +41,12 @@ func main() {
 		}
 
 		p := &Player{
-			id:   playerID,
-			conn: conn,
-			hub:  hub,
-			send: make(chan []byte, 16),
-			pos:  hub.maze.Start,
+			id:       playerID,
+			conn:     conn,
+			hub:      hub,
+			send:     make(chan []byte, 16),
+			pos:      hub.maze.Start,
+			joinedAt: time.Now(),
 		}
 
 		if err := hub.Join(p); err != nil {

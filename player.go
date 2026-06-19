@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -14,6 +15,8 @@ type Player struct {
 	hub         *Hub
 	send        chan []byte
 	pos         Pos
+	won         bool
+	joinedAt    time.Time
 	pendingMove atomic.Pointer[string] // latest move, nil if none queued
 }
 

@@ -85,6 +85,9 @@ func (h *Hub) Run() {
 func (h *Hub) tick() {
 	moved := false
 	for _, p := range h.players {
+		if p.won {
+			continue
+		}
 		dir := p.popMove()
 		if dir == "" {
 			continue
@@ -104,6 +107,11 @@ func (h *Hub) tick() {
 		p.pos.C += d.dc
 		p.send <- h.playerState(p)
 		moved = true
+
+		if p.pos == h.maze.Flag {
+			p.won = true
+			h.broadcastWin(p.id, time.Since(p.joinedAt))
+		}
 	}
 	if moved {
 		h.broadcastSpectatorState()
@@ -154,6 +162,26 @@ func (h *Hub) spectatorState() ([]byte, error) {
 		"grid":    flat,
 		"players": players,
 	})
+}
+
+func (h *Hub) broadcastWin(playerID string, elapsed time.Duration) {
+	msg, _ := json.Marshal(map[string]any{
+		"type":    "win",
+		"player":  playerID,
+		"elapsed": elapsed.Milliseconds(),
+	})
+	// notify the winner
+	if p, ok := h.players[playerID]; ok {
+		p.send <- msg
+	}
+	// notify all spectators
+	for s := range h.spectators {
+		select {
+		case s.send <- msg:
+		default:
+		}
+	}
+	log.Printf("player %s won!", playerID)
 }
 
 func (h *Hub) broadcastSpectatorState() {
