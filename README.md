@@ -3,7 +3,7 @@
 Write a bot (any language) that connects to the maze server, navigates a
 fog-of-war maze, and reaches the flag in the fewest moves.
 
-![demo](docs/demo.gif)
+https://github.com/user-attachments/assets/84485e8f-0358-4acf-ae33-3fef8b8d67cc
 
 ## Goal
 
