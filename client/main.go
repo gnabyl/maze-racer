@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -36,12 +37,15 @@ func validMoves(fog []int) []string {
 }
 
 func main() {
+	server := flag.String("server", "ws://localhost:8080", "server base URL (ws:// or wss://)")
+	flag.Parse()
+
 	playerID := "player1"
-	if len(os.Args) > 1 {
-		playerID = os.Args[1]
+	if flag.NArg() > 0 {
+		playerID = flag.Arg(0)
 	}
 
-	url := fmt.Sprintf("ws://localhost:8080/join/%s", playerID)
+	url := fmt.Sprintf("%s/join/%s", *server, playerID)
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		log.Fatal("connect error:", err)

@@ -74,7 +74,8 @@
     // { from: {r,c}, to: {r,c}, startMs: number, won: bool }
     const playerAnims = {};
 
-    const ws = new WebSocket(`ws://${location.host}/spectate`);
+    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${wsProto}://${location.host}/spectate`);
     ws.onopen = () => status.textContent = 'connected — waiting for players…';
     ws.onclose = () => { status.textContent = 'disconnected'; startBtn.disabled = true; };
     ws.onerror = () => status.textContent = 'connection error';

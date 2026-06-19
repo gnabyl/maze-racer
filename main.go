@@ -1,24 +1,31 @@
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 func main() {
-	rooms    := flag.Int("rooms", 15, "maze size (number of rooms per side)")
+	rooms := flag.Int("rooms", 15, "maze size (number of rooms per side)")
 	extraPass := flag.Float64("extra", 0.1, "fraction of extra passages (0.0-1.0)")
-	tickMs   := flag.Int("tick", 300, "tick rate in milliseconds")
+	tickMs := flag.Int("tick", 300, "tick rate in milliseconds")
+	addr := flag.String("addr", "", "listen address (overrides PORT env; default :8080)")
 	flag.Parse()
 
 	rng := rand.New(rand.NewSource(42))
@@ -77,9 +84,25 @@ func main() {
 		s.ReadPump(hub)
 	})
 
-	// serve spectator UI
-	http.Handle("/", http.FileServer(http.Dir("static")))
+	// serve spectator UI from embedded files
+	uiFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatal(err)
+	}
+	http.Handle("/", http.FileServer(http.FS(uiFS)))
 
-	log.Println("server listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	listenAddr := resolveAddr(*addr)
+	log.Printf("server listening on %s", listenAddr)
+	log.Fatal(http.ListenAndServe(listenAddr, nil))
+}
+
+// resolveAddr picks the listen address: -addr flag, then PORT env, then :8080.
+func resolveAddr(flagAddr string) string {
+	if flagAddr != "" {
+		return flagAddr
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
