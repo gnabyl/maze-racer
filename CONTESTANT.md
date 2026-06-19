@@ -179,4 +179,37 @@ on message m:
 A random open-direction walker works but ranks poorly. Track where you've been
 (using `pos`), avoid backtracking, and head toward the flag bit when you see it.
 
+## Develop against a local server
+
+You don't need the contest server to build your bot — run one locally.
+
+Requires Go. From the repo root:
+
+```bash
+# 1. start a server (no password needed locally; admin UI is open)
+go run .                        # listens on :8080
+
+# 2. open the spectator UI and click START GAME
+#    → http://localhost:8080
+
+# 3. point your bot at the local server
+#    ws://localhost:8080/join/<your-name>
+```
+
+The game won't send `state` until you press **START** in the UI — until then
+your bot gets `{"type":"waiting"}`. Use **RESTART** in the UI to generate a
+fresh maze (and adjust rooms / tick rate).
+
+Reference client (random walker) to sanity-check your setup:
+```bash
+go run ./client myname          # defaults to ws://localhost:8080
+```
+
+Tuning the local server:
+```bash
+go run . -rooms 10 -tick 150    # smaller maze, faster ticks for quick iteration
+```
+Flags: `-rooms` (size), `-tick` (ms per move), `-extra` (0–1, extra passages),
+`-addr` (listen address).
+
 Good luck.
