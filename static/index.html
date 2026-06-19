@@ -69,6 +69,7 @@
 
     let grid = null;
     let rooms = 0;
+    let following = null;   // player id being followed (fog-only view), or null
 
     // per-player animation state keyed by id
     // { from: {r,c}, to: {r,c}, startMs: number, won: bool }
@@ -93,9 +94,13 @@
 
       const started = msg.started;
       startBtn.disabled = started || ws.readyState !== WebSocket.OPEN;
-      status.textContent = started
-        ? `game running — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''}`
-        : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
+      if (following) {
+        status.textContent = `following ${following} — click again to exit`;
+      } else {
+        status.textContent = started
+          ? `game running — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''}`
+          : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
+      }
 
       // derive animation duration from tick rate
       if (msg.tick_ms) {
@@ -152,11 +157,46 @@
     function frame(now) {
       requestAnimationFrame(frame);
       if (!grid) return;
+      if (following && !playerAnims[following]) following = null; // left/gone
 
+      sizeCanvas(rooms * CELL);
       ctx.fillStyle = '#1a1a1a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // draw static maze (defer the flag so it sits on top of players)
+      if (following && playerAnims[following]) {
+        // spotlight: blur + dim the whole maze, then a sharp 5x5 window
+        ctx.save();
+        ctx.filter = 'blur(3px)';
+        drawScene(now);
+        ctx.restore();
+        ctx.fillStyle = 'rgba(17,17,17,0.6)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const cell = playerAnims[following].to;     // discrete cell = fog centre
+        const ws = 5 * CELL;
+        const wx = (cell.c - 2) * CELL, wy = (cell.r - 2) * CELL;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(wx, wy, ws, ws);
+        ctx.clip();
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(wx, wy, ws, ws);  // clean bg inside the window
+        drawScene(now);                // sharp inside the clip
+        ctx.restore();
+
+        // window outline in the player's colour
+        ctx.strokeStyle = playerColor(following);
+        ctx.lineWidth = 3;
+        ctx.strokeRect(wx, wy, ws, ws);
+      } else {
+        drawScene(now);
+      }
+    }
+    requestAnimationFrame(frame);
+
+    // draw the full maze (walls, players, flag). Assumes background already filled.
+    function drawScene(now) {
       let flagXY = null;
       for (let r = 0; r < rooms; r++) {
         for (let c = 0; c < rooms; c++) {
@@ -173,18 +213,16 @@
         }
       }
 
-      // draw animated players
       Object.entries(playerAnims).forEach(([id, anim]) => {
         const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
         const r = lerp(anim.from.r, anim.to.r, t);
         const c = lerp(anim.from.c, anim.to.c, t);
         const x = c * CELL + CELL / 2;
         const y = r * CELL + CELL / 2;
-        const color = playerColor(id);
 
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
-        ctx.fillStyle = anim.won ? '#ffd700' : color;
+        ctx.fillStyle = anim.won ? '#ffd700' : playerColor(id);
         ctx.globalAlpha = anim.connected ? 1 : 0.35;
         ctx.fill();
         ctx.globalAlpha = 1;
@@ -196,10 +234,13 @@
         ctx.fillText(id[0].toUpperCase(), x, y);
       });
 
-      // draw flag last, on top of everything
       if (flagXY) drawFlag(flagXY[0], flagXY[1]);
     }
-    requestAnimationFrame(frame);
+
+    // resize canvas only when the target size changes (avoids clearing churn)
+    function sizeCanvas(px) {
+      if (canvas.width !== px) canvas.width = canvas.height = px;
+    }
 
     function lerp(a, b, t) { return a + (b - a) * t; }
     function ease(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; } // ease in-out quad
@@ -214,16 +255,27 @@
       players.forEach(p => {
         const row = document.createElement('div');
         row.className = 'player-row';
+        row.style.cursor = 'pointer';
+        if (p.id === following) row.style.background = '#2a2a1a';
         const connDot = p.connected ? '#4c4' : '#844';
+        const eye = p.id === following ? '<span title="following" style="margin-left:4px">👁</span>' : '';
         row.innerHTML = `
           <div class="dot" style="background:${playerColor(p.id)}"></div>
           <span style="flex:1">${p.id}</span>
           <span style="color:#666;font-size:11px">${p.moves}m</span>
           <div class="dot" style="background:${connDot}" title="${p.connected ? 'online' : 'offline'}"></div>
-          ${p.won ? '<span class="won-badge">✓</span>' : ''}
+          ${p.won ? '<span class="won-badge">✓</span>' : ''}${eye}
         `;
+        row.title = 'click to follow (fog-only view)';
+        row.onclick = () => toggleFollow(p.id);
         playerList.appendChild(row);
       });
+    }
+
+    // follow a player (fog-only view); clicking the followed one again exits
+    function toggleFollow(id) {
+      following = (following === id) ? null : id;
+      status.textContent = following ? `following ${following} — click again to exit` : '';
     }
 
     function renderRankings(rankings) {
