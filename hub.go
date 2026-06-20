@@ -200,11 +200,7 @@ func (h *Hub) broadcastMoved(movers []playerInfo) {
 	if len(h.spectators) == 0 {
 		return
 	}
-	msg, _ := json.Marshal(map[string]any{
-		"type":     "moved",
-		"players":  movers,
-		"rankings": h.rankings,
-	})
+	msg, _ := json.Marshal(msgMoved{Type: "moved", Players: movers, Rankings: h.rankings})
 	h.sendSpectators(msg)
 }
 
@@ -228,6 +224,41 @@ type playerInfo struct {
 	Moves int    `json:"moves"`
 }
 
+type msgMoved struct {
+	Type     string      `json:"type"`
+	Players  []playerInfo `json:"players"`
+	Rankings []rankEntry  `json:"rankings"`
+}
+
+type msgError struct {
+	Type string `json:"type"`
+	Msg  string `json:"msg"`
+}
+
+type msgSpectatorFull struct {
+	Type     string       `json:"type"`
+	Started  bool         `json:"started"`
+	Rooms    int          `json:"rooms"`
+	TickMs   int64        `json:"tick_ms"`
+	Grid     []int        `json:"grid"`
+	Players  []playerInfo `json:"players"`
+	Rankings []rankEntry  `json:"rankings"`
+}
+
+type msgPositions struct {
+	Type     string       `json:"type"`
+	Started  bool         `json:"started"`
+	Players  []playerInfo `json:"players"`
+	Rankings []rankEntry  `json:"rankings"`
+}
+
+type msgWin struct {
+	Type     string      `json:"type"`
+	Player   string      `json:"player"`
+	Moves    int         `json:"moves"`
+	Rankings []rankEntry `json:"rankings"`
+}
+
 func (h *Hub) playerInfos() []playerInfo {
 	out := make([]playerInfo, 0, len(h.players))
 	for _, p := range h.players {
@@ -241,7 +272,7 @@ func (h *Hub) playerState(p *Player) []byte {
 }
 
 func errMsg(reason string) []byte {
-	msg, _ := json.Marshal(map[string]any{"type": "error", "msg": reason})
+	msg, _ := json.Marshal(msgError{Type: "error", Msg: reason})
 	return msg
 }
 
@@ -252,14 +283,14 @@ func (h *Hub) spectatorFull() []byte {
 	for _, row := range h.maze.Grid {
 		flat = append(flat, row...)
 	}
-	msg, _ := json.Marshal(map[string]any{
-		"type":     "state",
-		"started":  h.started,
-		"rooms":    h.maze.Rooms,
-		"tick_ms":  h.tickRate.Milliseconds(),
-		"grid":     flat,
-		"players":  h.playerInfos(),
-		"rankings": h.rankings,
+	msg, _ := json.Marshal(msgSpectatorFull{
+		Type:     "state",
+		Started:  h.started,
+		Rooms:    h.maze.Rooms,
+		TickMs:   h.tickRate.Milliseconds(),
+		Grid:     flat,
+		Players:  h.playerInfos(),
+		Rankings: h.rankings,
 	})
 	return msg
 }
@@ -267,22 +298,17 @@ func (h *Hub) spectatorFull() []byte {
 // spectatorPositions is the lightweight per-tick update: positions + rankings,
 // no grid. Spectators cache the grid from the last full message.
 func (h *Hub) spectatorPositions() []byte {
-	msg, _ := json.Marshal(map[string]any{
-		"type":     "positions",
-		"started":  h.started,
-		"players":  h.playerInfos(),
-		"rankings": h.rankings,
+	msg, _ := json.Marshal(msgPositions{
+		Type:     "positions",
+		Started:  h.started,
+		Players:  h.playerInfos(),
+		Rankings: h.rankings,
 	})
 	return msg
 }
 
 func (h *Hub) broadcastWin(playerID string, moves int) {
-	msg, _ := json.Marshal(map[string]any{
-		"type":     "win",
-		"player":   playerID,
-		"moves":    moves,
-		"rankings": h.rankings,
-	})
+	msg, _ := json.Marshal(msgWin{Type: "win", Player: playerID, Moves: moves, Rankings: h.rankings})
 	if p, ok := h.players[playerID]; ok {
 		p.trySend(msg)
 	}
