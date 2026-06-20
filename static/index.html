@@ -35,6 +35,7 @@
     <button id="restart-btn">RESTART</button>
     <div class="param-group"><label>rooms</label><input id="inp-rooms" type="number" min="5" max="50" value="15"></div>
     <div class="param-group"><label>tick ms</label><input id="inp-tick" type="number" min="50" max="2000" value="300"></div>
+    <div class="param-group"><label><input id="anim-chk" type="checkbox" checked> animate</label></div>
     <div id="status">connecting…</div>
   </div>
   <div id="layout">
@@ -70,6 +71,7 @@
     let grid = null;
     let rooms = 0;
     let following = null;   // player id being followed (fog-only view), or null
+    let animate = true;     // false = repaint on message only (no 60fps interpolation)
 
     // per-player animation state keyed by id
     // { from: {r,c}, to: {r,c}, startMs: number, won: bool }
@@ -81,6 +83,12 @@
     ws.onclose = () => { status.textContent = 'disconnected'; startBtn.disabled = true; };
     ws.onerror = () => status.textContent = 'connection error';
 
+    let roster = {};          // id -> {id,pos,won,moves} — full client-side state
+    let gameStarted = false;
+    const mazeCanvas = document.createElement('canvas');  // offscreen, static walls
+    const mazeCtx = mazeCanvas.getContext('2d');
+    let flagXY = null;
+
     ws.onmessage = e => {
       const msg = JSON.parse(e.data);
 
@@ -90,8 +98,9 @@
         return;
       }
 
+      const now = performance.now();
       if (msg.type === 'state') {
-        // full snapshot: cache the static grid (sent once / on restart)
+        // full snapshot: grid (cache it) + full roster
         if (msg.tick_ms) {
           ANIM_MS = Math.floor(msg.tick_ms * 0.7);
           inpTick.value = msg.tick_ms;
@@ -102,29 +111,32 @@
           canvas.width = canvas.height = rooms * CELL;
         }
         grid = msg.grid;
-        applyUpdate(msg);
+        buildMazeCache();
+        roster = {};
+        msg.players.forEach(p => roster[p.id] = p);
+        gameStarted = msg.started;
+        syncAnims(msg.players, now, true);
+        renderAll(msg.rankings);
       } else if (msg.type === 'positions') {
-        // light per-tick update: positions + rankings, no grid
-        applyUpdate(msg);
+        // full roster, no grid (join/leave/start)
+        roster = {};
+        msg.players.forEach(p => roster[p.id] = p);
+        gameStarted = msg.started;
+        syncAnims(msg.players, now, true);
+        renderAll(msg.rankings);
+      } else if (msg.type === 'moved') {
+        // delta: only players that moved this tick — merge, don't drop others
+        msg.players.forEach(p => roster[p.id] = p);
+        syncAnims(msg.players, now, false);
+        renderAll(msg.rankings);
       }
+
+      // animation off → no rAF loop running, so repaint now (event-driven)
+      if (!animate) draw(now);
     };
 
-    // apply a players/rankings/started update (shared by state + positions)
-    function applyUpdate(msg) {
-      const started = msg.started;
-      startBtn.disabled = started || ws.readyState !== WebSocket.OPEN;
-      if (following) {
-        status.textContent = `following ${following} — click again to exit`;
-      } else {
-        status.textContent = started
-          ? `game running — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''}`
-          : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
-      }
-
-      const now = performance.now();
-      const seen = new Set();
-      msg.players.forEach(p => {
-        seen.add(p.id);
+    function syncAnims(players, now, removeMissing) {
+      players.forEach(p => {
         const anim = playerAnims[p.id];
         if (!anim) {
           playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won };
@@ -136,11 +148,57 @@
           anim.won = p.won;
         }
       });
-      Object.keys(playerAnims).forEach(id => { if (!seen.has(id)) delete playerAnims[id]; });
-
-      renderPlayerList(msg.players);
-      renderRankings(msg.rankings);
+      if (removeMissing) {
+        Object.keys(playerAnims).forEach(id => { if (!(id in roster)) delete playerAnims[id]; });
+      }
     }
+
+    function renderAll(rankings) {
+      const n = Object.keys(roster).length;
+      startBtn.disabled = gameStarted || ws.readyState !== WebSocket.OPEN;
+      if (following) {
+        status.textContent = `following ${following} — click again to exit`;
+      } else {
+        status.textContent = gameStarted
+          ? `game running — ${n} player${n !== 1 ? 's' : ''}`
+          : `lobby — ${n} player${n !== 1 ? 's' : ''} waiting`;
+      }
+      renderPlayerList(Object.values(roster));
+      if (rankings) renderRankings(rankings);
+    }
+
+    // render the static maze walls to an offscreen canvas once (per grid change);
+    // the frame loop just blits it instead of redrawing 1600 cells at 60fps
+    function buildMazeCache() {
+      mazeCanvas.width = mazeCanvas.height = rooms * CELL;
+      mazeCtx.fillStyle = '#1a1a1a';
+      mazeCtx.fillRect(0, 0, mazeCanvas.width, mazeCanvas.height);
+      mazeCtx.strokeStyle = '#555';
+      mazeCtx.lineWidth = STROKE;
+      mazeCtx.lineCap = 'square';
+      flagXY = null;
+      for (let r = 0; r < rooms; r++) {
+        for (let c = 0; c < rooms; c++) {
+          const cell = grid[r * rooms + c];
+          const x = c * CELL, y = r * CELL;
+          if (cell & WALL_UP)    mline(x, y, x + CELL, y);
+          if (cell & WALL_DOWN)  mline(x, y + CELL, x + CELL, y + CELL);
+          if (cell & WALL_RIGHT) mline(x + CELL, y, x + CELL, y + CELL);
+          if (cell & WALL_LEFT)  mline(x, y, x, y + CELL);
+          if (cell & BIT_FLAG)   flagXY = [x + CELL / 2, y + CELL / 2];
+        }
+      }
+    }
+    function mline(x1, y1, x2, y2) {
+      mazeCtx.beginPath(); mazeCtx.moveTo(x1, y1); mazeCtx.lineTo(x2, y2); mazeCtx.stroke();
+    }
+
+    const animChk = document.getElementById('anim-chk');
+    animChk.addEventListener('change', () => {
+      animate = animChk.checked;
+      if (animate) requestAnimationFrame(loop); // resume smooth loop
+      else draw(performance.now());             // paint once at current positions
+    });
 
     startBtn.addEventListener('click', () => {
       ws.send(JSON.stringify({ cmd: 'start' }));
@@ -155,9 +213,14 @@
       }));
     });
 
-    // animation loop
-    function frame(now) {
-      requestAnimationFrame(frame);
+    // rAF loop runs only while animation is on; otherwise we repaint on message
+    function loop(now) {
+      if (!animate) return;
+      draw(now);
+      requestAnimationFrame(loop);
+    }
+
+    function draw(now) {
       if (!grid) return;
       if (following && !playerAnims[following]) following = null; // left/gone
 
@@ -192,31 +255,37 @@
         ctx.lineWidth = 3;
         ctx.strokeRect(wx, wy, ws, ws);
       } else {
-        drawScene(now);
+        // normal view: blit the cached maze, draw players + flag on top
+        ctx.drawImage(mazeCanvas, 0, 0);
+        drawPlayers(now);
+        if (flagXY) drawFlag(flagXY[0], flagXY[1]);
       }
     }
-    requestAnimationFrame(frame);
+    requestAnimationFrame(loop);
 
-    // draw the full maze (walls, players, flag). Assumes background already filled.
+    // draw the full maze live (walls + players + flag). Used by follow mode,
+    // which needs the maze re-rendered under the blur/clip each frame.
     function drawScene(now) {
-      let flagXY = null;
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = STROKE;
+      ctx.lineCap = 'square';
       for (let r = 0; r < rooms; r++) {
         for (let c = 0; c < rooms; c++) {
           const cell = grid[r * rooms + c];
           const x = c * CELL, y = r * CELL;
-          ctx.strokeStyle = '#555';
-          ctx.lineWidth = STROKE;
-          ctx.lineCap = 'square';
           if (cell & WALL_UP)    line(x, y, x + CELL, y);
           if (cell & WALL_DOWN)  line(x, y + CELL, x + CELL, y + CELL);
           if (cell & WALL_RIGHT) line(x + CELL, y, x + CELL, y + CELL);
           if (cell & WALL_LEFT)  line(x, y, x, y + CELL);
-          if (cell & BIT_FLAG)   flagXY = [x + CELL / 2, y + CELL / 2];
         }
       }
+      drawPlayers(now);
+      if (flagXY) drawFlag(flagXY[0], flagXY[1]);
+    }
 
+    function drawPlayers(now) {
       Object.entries(playerAnims).forEach(([id, anim]) => {
-        const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
+        const t = animate ? ease(Math.min(1, (now - anim.startMs) / ANIM_MS)) : 1;
         const r = lerp(anim.from.r, anim.to.r, t);
         const c = lerp(anim.from.c, anim.to.c, t);
         const x = c * CELL + CELL / 2;
@@ -233,8 +302,6 @@
         ctx.textBaseline = 'middle';
         ctx.fillText(id[0].toUpperCase(), x, y);
       });
-
-      if (flagXY) drawFlag(flagXY[0], flagXY[1]);
     }
 
     // resize canvas only when the target size changes (avoids clearing churn)

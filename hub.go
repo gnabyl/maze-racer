@@ -106,7 +106,7 @@ func (h *Hub) Run() {
 				p.won = false
 				p.moves = 0
 				p.pos = h.maze.Start
-				p.send <- h.playerState(p)
+				p.trySend(h.playerState(p))
 			}
 			h.broadcastFull()
 			log.Printf("game started with %d players", len(h.players))
@@ -127,7 +127,7 @@ func (h *Hub) Run() {
 				p.moves = 0
 				p.pos = h.maze.Start
 				p.pendingMove.Store(nil)
-				p.send <- []byte(`{"type":"waiting"}`)
+				p.trySend([]byte(`{"type":"waiting"}`))
 			}
 			h.broadcastFull()
 			log.Printf("game restarted: rooms=%d tick=%s", h.cfg.Rooms, h.tickRate)
@@ -153,7 +153,7 @@ func (h *Hub) Run() {
 }
 
 func (h *Hub) tick() {
-	moved := false
+	var movers []playerInfo // only players that moved this tick (spectator delta)
 	for _, p := range h.players {
 		if p.won {
 			continue
@@ -164,20 +164,19 @@ func (h *Hub) tick() {
 		}
 		di, ok := dirMap[dir]
 		if !ok {
-			p.send <- errMsg("unknown direction: " + dir)
+			p.trySend(errMsg("unknown direction: " + dir))
 			continue
 		}
 		d := dirs[di]
 		cell := h.maze.Grid[p.pos.R][p.pos.C]
 		if cell&d.wall != 0 {
-			p.send <- errMsg("wall")
+			p.trySend(errMsg("wall"))
 			continue
 		}
 		p.pos.R += d.dr
 		p.pos.C += d.dc
 		p.moves++
-		p.send <- h.playerState(p)
-		moved = true
+		p.trySend(h.playerState(p))
 
 		if p.pos == h.maze.Flag {
 			p.won = true
@@ -188,10 +187,22 @@ func (h *Hub) tick() {
 			})
 			h.broadcastWin(p.id, p.moves)
 		}
+		movers = append(movers, playerInfo{ID: p.id, Pos: p.pos, Won: p.won, Moves: p.moves})
 	}
-	if moved {
-		h.broadcastPositions()
+	if len(movers) > 0 {
+		h.broadcastMoved(movers)
 	}
+}
+
+// broadcastMoved sends only the players that moved this tick (delta). Spectators
+// merge these into their cached set — far smaller than the full roster.
+func (h *Hub) broadcastMoved(movers []playerInfo) {
+	msg, _ := json.Marshal(map[string]any{
+		"type":     "moved",
+		"players":  movers,
+		"rankings": h.rankings,
+	})
+	h.sendSpectators(msg)
 }
 
 func (h *Hub) Join(id string, conn *websocket.Conn) (*Player, error) {
@@ -271,7 +282,7 @@ func (h *Hub) broadcastWin(playerID string, moves int) {
 		"rankings": h.rankings,
 	})
 	if p, ok := h.players[playerID]; ok {
-		p.send <- msg
+		p.trySend(msg)
 	}
 	h.sendSpectators(msg)
 	log.Printf("player %s won in %d moves", playerID, moves)
