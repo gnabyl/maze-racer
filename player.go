@@ -15,10 +15,9 @@ type Player struct {
 	hub       *Hub
 	send      chan []byte
 	pos       Pos
-	won       bool
-	connected bool
-	moves     int
-	joinedAt  time.Time
+	won      bool
+	moves    int
+	joinedAt time.Time
 
 	pendingMove atomic.Pointer[string] // latest move, nil if none queued
 }

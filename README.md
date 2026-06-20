@@ -23,8 +23,8 @@ ws://<PUBLIC_IP>:8080/join/<your-name>
 
 - Pick a unique id. If that id is already connected, the server rejects you with
   an error and closes the socket.
-- If you disconnect and reconnect with the **same id**, your position and move
-  count are restored (you resume where you were).
+- If you disconnect you're removed from the game — reconnecting with the same id
+  starts you over from the spawn cell (no resume). Keep your connection alive.
 
 All messages in both directions are **JSON text frames**.
 

@@ -69,38 +69,28 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case req := <-h.join:
-			if existing, ok := h.players[req.id]; ok {
-				if existing.connected {
-					req.result <- joinResult{err: fmt.Errorf("player id %q already connected", req.id)}
-					continue
-				}
-				// reconnect: restore state with new connection
-				existing.conn = req.conn
-				existing.send = make(chan []byte, 16)
-				existing.connected = true
-				existing.pendingMove.Store(nil)
-				req.result <- joinResult{player: existing}
-				log.Printf("player reconnected: %s", req.id)
-			} else {
-				p := &Player{
-					id:        req.id,
-					conn:      req.conn,
-					hub:       h,
-					send:      make(chan []byte, 16),
-					pos:       h.maze.Start,
-					connected: true,
-				}
-				h.players[req.id] = p
-				req.result <- joinResult{player: p}
-				log.Printf("player joined: %s (total: %d)", req.id, len(h.players))
+			if _, ok := h.players[req.id]; ok {
+				req.result <- joinResult{err: fmt.Errorf("player id %q already connected", req.id)}
+				continue
 			}
+			p := &Player{
+				id:   req.id,
+				conn: req.conn,
+				hub:  h,
+				send: make(chan []byte, 16),
+				pos:  h.maze.Start,
+			}
+			h.players[req.id] = p
+			req.result <- joinResult{player: p}
+			log.Printf("player joined: %s (total: %d)", req.id, len(h.players))
 			h.broadcastSpectatorState()
 
 		case p := <-h.leave:
+			// drop the player entirely on disconnect (no reconnect/resume)
 			if current, ok := h.players[p.id]; ok && current == p {
-				p.connected = false
+				delete(h.players, p.id)
 				close(p.send)
-				log.Printf("player disconnected: %s", p.id)
+				log.Printf("player left: %s (total: %d)", p.id, len(h.players))
 				h.broadcastSpectatorState()
 			}
 
@@ -167,7 +157,7 @@ func (h *Hub) Run() {
 func (h *Hub) tick() {
 	moved := false
 	for _, p := range h.players {
-		if p.won || !p.connected {
+		if p.won {
 			continue
 		}
 		dir := p.popMove()
@@ -237,18 +227,14 @@ func (h *Hub) spectatorState() ([]byte, error) {
 	}
 
 	type playerInfo struct {
-		ID        string `json:"id"`
-		Pos       Pos    `json:"pos"`
-		Won       bool   `json:"won"`
-		Connected bool   `json:"connected"`
-		Moves     int    `json:"moves"`
+		ID    string `json:"id"`
+		Pos   Pos    `json:"pos"`
+		Won   bool   `json:"won"`
+		Moves int    `json:"moves"`
 	}
 	players := make([]playerInfo, 0, len(h.players))
 	for _, p := range h.players {
-		players = append(players, playerInfo{
-			ID: p.id, Pos: p.pos, Won: p.won,
-			Connected: p.connected, Moves: p.moves,
-		})
+		players = append(players, playerInfo{ID: p.id, Pos: p.pos, Won: p.won, Moves: p.moves})
 	}
 
 	return json.Marshal(map[string]any{

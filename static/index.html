@@ -123,14 +123,13 @@
         seen.add(p.id);
         const anim = playerAnims[p.id];
         if (!anim) {
-          playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won, connected: p.connected };
+          playerAnims[p.id] = { from: p.pos, to: p.pos, startMs: now - ANIM_MS, won: p.won };
         } else if (anim.to.r !== p.pos.r || anim.to.c !== p.pos.c) {
           const t = ease(Math.min(1, (now - anim.startMs) / ANIM_MS));
           const cur = { r: lerp(anim.from.r, anim.to.r, t), c: lerp(anim.from.c, anim.to.c, t) };
-          playerAnims[p.id] = { from: cur, to: p.pos, startMs: now, won: p.won, connected: p.connected };
+          playerAnims[p.id] = { from: cur, to: p.pos, startMs: now, won: p.won };
         } else {
           anim.won = p.won;
-          anim.connected = p.connected;
         }
       });
       // remove disconnected players
@@ -223,9 +222,7 @@
         ctx.beginPath();
         ctx.arc(x, y, CELL * 0.28, 0, Math.PI * 2);
         ctx.fillStyle = anim.won ? '#ffd700' : playerColor(id);
-        ctx.globalAlpha = anim.connected ? 1 : 0.35;
         ctx.fill();
-        ctx.globalAlpha = 1;
 
         ctx.fillStyle = '#111';
         ctx.font = `bold ${Math.floor(CELL * 0.28)}px monospace`;
@@ -257,13 +254,11 @@
         row.className = 'player-row';
         row.style.cursor = 'pointer';
         if (p.id === following) row.style.background = '#2a2a1a';
-        const connDot = p.connected ? '#4c4' : '#844';
         const eye = p.id === following ? '<span title="following" style="margin-left:4px">👁</span>' : '';
         row.innerHTML = `
           <div class="dot" style="background:${playerColor(p.id)}"></div>
           <span style="flex:1">${p.id}</span>
           <span style="color:#666;font-size:11px">${p.moves}m</span>
-          <div class="dot" style="background:${connDot}" title="${p.connected ? 'online' : 'offline'}"></div>
           ${p.won ? '<span class="won-badge">✓</span>' : ''}${eye}
         `;
         row.title = 'click to follow (fog-only view)';
