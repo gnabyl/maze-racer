@@ -90,8 +90,27 @@
         return;
       }
 
-      if (msg.type !== 'state') return;
+      if (msg.type === 'state') {
+        // full snapshot: cache the static grid (sent once / on restart)
+        if (msg.tick_ms) {
+          ANIM_MS = Math.floor(msg.tick_ms * 0.7);
+          inpTick.value = msg.tick_ms;
+          inpRooms.value = msg.rooms;
+        }
+        if (msg.rooms !== rooms) {
+          rooms = msg.rooms;
+          canvas.width = canvas.height = rooms * CELL;
+        }
+        grid = msg.grid;
+        applyUpdate(msg);
+      } else if (msg.type === 'positions') {
+        // light per-tick update: positions + rankings, no grid
+        applyUpdate(msg);
+      }
+    };
 
+    // apply a players/rankings/started update (shared by state + positions)
+    function applyUpdate(msg) {
       const started = msg.started;
       startBtn.disabled = started || ws.readyState !== WebSocket.OPEN;
       if (following) {
@@ -102,21 +121,6 @@
           : `lobby — ${msg.players.length} player${msg.players.length !== 1 ? 's' : ''} waiting`;
       }
 
-      // derive animation duration from tick rate
-      if (msg.tick_ms) {
-        ANIM_MS = Math.floor(msg.tick_ms * 0.7);
-        inpTick.value = msg.tick_ms;
-        inpRooms.value = msg.rooms;
-      }
-
-      // update grid (static, only changes on restart)
-      if (msg.rooms !== rooms) {
-        rooms = msg.rooms;
-        canvas.width = canvas.height = rooms * CELL;
-      }
-      grid = msg.grid;
-
-      // update animation targets per player
       const now = performance.now();
       const seen = new Set();
       msg.players.forEach(p => {
@@ -132,12 +136,11 @@
           anim.won = p.won;
         }
       });
-      // remove disconnected players
       Object.keys(playerAnims).forEach(id => { if (!seen.has(id)) delete playerAnims[id]; });
 
       renderPlayerList(msg.players);
       renderRankings(msg.rankings);
-    };
+    }
 
     startBtn.addEventListener('click', () => {
       ws.send(JSON.stringify({ cmd: 'start' }));

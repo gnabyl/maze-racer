@@ -83,7 +83,7 @@ func (h *Hub) Run() {
 			h.players[req.id] = p
 			req.result <- joinResult{player: p}
 			log.Printf("player joined: %s (total: %d)", req.id, len(h.players))
-			h.broadcastSpectatorState()
+			h.broadcastPositions()
 
 		case p := <-h.leave:
 			// drop the player entirely on disconnect (no reconnect/resume)
@@ -91,7 +91,7 @@ func (h *Hub) Run() {
 				delete(h.players, p.id)
 				close(p.send)
 				log.Printf("player left: %s (total: %d)", p.id, len(h.players))
-				h.broadcastSpectatorState()
+				h.broadcastPositions()
 			}
 
 		case <-h.startGame:
@@ -108,7 +108,7 @@ func (h *Hub) Run() {
 				p.pos = h.maze.Start
 				p.send <- h.playerState(p)
 			}
-			h.broadcastSpectatorState()
+			h.broadcastFull()
 			log.Printf("game started with %d players", len(h.players))
 
 		case req := <-h.restartGame:
@@ -129,15 +129,13 @@ func (h *Hub) Run() {
 				p.pendingMove.Store(nil)
 				p.send <- []byte(`{"type":"waiting"}`)
 			}
-			h.broadcastSpectatorState()
+			h.broadcastFull()
 			log.Printf("game restarted: rooms=%d tick=%s", h.cfg.Rooms, h.tickRate)
 
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
 			log.Printf("spectator joined (total: %d)", len(h.spectators))
-			if msg, err := h.spectatorState(); err == nil {
-				s.send <- msg
-			}
+			s.send <- h.spectatorFull()
 
 		case s := <-h.leaveSpectator:
 			if h.spectators[s] {
@@ -192,7 +190,7 @@ func (h *Hub) tick() {
 		}
 	}
 	if moved {
-		h.broadcastSpectatorState()
+		h.broadcastPositions()
 	}
 }
 
@@ -203,49 +201,66 @@ func (h *Hub) Join(id string, conn *websocket.Conn) (*Player, error) {
 	return res.player, res.err
 }
 
+type fogState struct {
+	Type string `json:"type"`
+	Fog  []int  `json:"fog"`
+	Pos  Pos    `json:"pos"`
+}
+
+type playerInfo struct {
+	ID    string `json:"id"`
+	Pos   Pos    `json:"pos"`
+	Won   bool   `json:"won"`
+	Moves int    `json:"moves"`
+}
+
+func (h *Hub) playerInfos() []playerInfo {
+	out := make([]playerInfo, 0, len(h.players))
+	for _, p := range h.players {
+		out = append(out, playerInfo{ID: p.id, Pos: p.pos, Won: p.won, Moves: p.moves})
+	}
+	return out
+}
+
 func (h *Hub) playerState(p *Player) []byte {
-	msg, _ := json.Marshal(map[string]any{
-		"type": "state",
-		"fog":  h.maze.Fog(p.pos),
-		"pos":  p.pos,
-	})
+	msg, _ := json.Marshal(fogState{Type: "state", Fog: h.maze.Fog(p.pos), Pos: p.pos})
 	return msg
 }
 
 func errMsg(reason string) []byte {
-	msg, _ := json.Marshal(map[string]any{
-		"type": "error",
-		"msg":  reason,
-	})
+	msg, _ := json.Marshal(map[string]any{"type": "error", "msg": reason})
 	return msg
 }
 
-func (h *Hub) spectatorState() ([]byte, error) {
+// spectatorFull includes the static maze grid. Sent once per spectator (on
+// connect) and on restart (new maze) — NOT every tick.
+func (h *Hub) spectatorFull() []byte {
 	flat := make([]int, 0, h.maze.Rooms*h.maze.Rooms)
 	for _, row := range h.maze.Grid {
 		flat = append(flat, row...)
 	}
-
-	type playerInfo struct {
-		ID    string `json:"id"`
-		Pos   Pos    `json:"pos"`
-		Won   bool   `json:"won"`
-		Moves int    `json:"moves"`
-	}
-	players := make([]playerInfo, 0, len(h.players))
-	for _, p := range h.players {
-		players = append(players, playerInfo{ID: p.id, Pos: p.pos, Won: p.won, Moves: p.moves})
-	}
-
-	return json.Marshal(map[string]any{
+	msg, _ := json.Marshal(map[string]any{
 		"type":     "state",
 		"started":  h.started,
 		"rooms":    h.maze.Rooms,
 		"tick_ms":  h.tickRate.Milliseconds(),
 		"grid":     flat,
-		"players":  players,
+		"players":  h.playerInfos(),
 		"rankings": h.rankings,
 	})
+	return msg
+}
+
+// spectatorPositions is the lightweight per-tick update: positions + rankings,
+// no grid. Spectators cache the grid from the last full message.
+func (h *Hub) spectatorPositions() []byte {
+	msg, _ := json.Marshal(map[string]any{
+		"type":     "positions",
+		"started":  h.started,
+		"players":  h.playerInfos(),
+		"rankings": h.rankings,
+	})
+	return msg
 }
 
 func (h *Hub) broadcastWin(playerID string, moves int) {
@@ -258,20 +273,11 @@ func (h *Hub) broadcastWin(playerID string, moves int) {
 	if p, ok := h.players[playerID]; ok {
 		p.send <- msg
 	}
-	for s := range h.spectators {
-		select {
-		case s.send <- msg:
-		default:
-		}
-	}
+	h.sendSpectators(msg)
 	log.Printf("player %s won in %d moves", playerID, moves)
 }
 
-func (h *Hub) broadcastSpectatorState() {
-	msg, err := h.spectatorState()
-	if err != nil {
-		return
-	}
+func (h *Hub) sendSpectators(msg []byte) {
 	for s := range h.spectators {
 		select {
 		case s.send <- msg:
@@ -279,3 +285,9 @@ func (h *Hub) broadcastSpectatorState() {
 		}
 	}
 }
+
+// broadcastFull resends the grid (use on restart / new maze).
+func (h *Hub) broadcastFull() { h.sendSpectators(h.spectatorFull()) }
+
+// broadcastPositions sends the light positions-only update (per tick, join/leave).
+func (h *Hub) broadcastPositions() { h.sendSpectators(h.spectatorPositions()) }
