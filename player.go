@@ -9,6 +9,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	writeTimeout  = 10 * time.Second
+	pongTimeout   = 60 * time.Second
+	pingInterval  = 54 * time.Second
+)
+
 type Player struct {
 	id        string
 	conn      *websocket.Conn
@@ -50,6 +56,12 @@ func (p *Player) ReadPump() {
 		p.conn.Close()
 	}()
 
+	p.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	p.conn.SetPongHandler(func(string) error {
+		p.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+		return nil
+	})
+
 	for {
 		_, raw, err := p.conn.ReadMessage()
 		if err != nil {
@@ -74,10 +86,27 @@ func (p *Player) ReadPump() {
 func (p *Player) WritePump() {
 	defer p.conn.Close()
 
-	for msg := range p.send {
-		if err := p.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("player %s write error: %v", p.id, err)
-			break
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case msg, ok := <-p.send:
+			p.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if !ok {
+				p.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := p.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("player %s write error: %v", p.id, err)
+				return
+			}
+
+		case <-ticker.C:
+			p.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if err := p.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }

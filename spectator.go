@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -19,10 +20,28 @@ type restartRequest struct {
 
 func (s *Spectator) WritePump() {
 	defer s.conn.Close()
-	for msg := range s.send {
-		if err := s.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("spectator write error: %v", err)
-			break
+
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case msg, ok := <-s.send:
+			s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if !ok {
+				s.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := s.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("spectator write error: %v", err)
+				return
+			}
+
+		case <-ticker.C:
+			s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if err := s.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -32,6 +51,13 @@ func (s *Spectator) ReadPump(hub *Hub) {
 		hub.leaveSpectator <- s
 		s.conn.Close()
 	}()
+
+	s.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	s.conn.SetPongHandler(func(string) error {
+		s.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+		return nil
+	})
+
 	for {
 		_, raw, err := s.conn.ReadMessage()
 		if err != nil {

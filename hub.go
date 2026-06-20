@@ -197,6 +197,9 @@ func (h *Hub) tick() {
 // broadcastMoved sends only the players that moved this tick (delta). Spectators
 // merge these into their cached set — far smaller than the full roster.
 func (h *Hub) broadcastMoved(movers []playerInfo) {
+	if len(h.spectators) == 0 {
+		return
+	}
 	msg, _ := json.Marshal(map[string]any{
 		"type":     "moved",
 		"players":  movers,
@@ -234,8 +237,7 @@ func (h *Hub) playerInfos() []playerInfo {
 }
 
 func (h *Hub) playerState(p *Player) []byte {
-	msg, _ := json.Marshal(fogState{Type: "state", Fog: h.maze.Fog(p.pos), Pos: p.pos})
-	return msg
+	return h.maze.FogCache[p.pos.R][p.pos.C]
 }
 
 func errMsg(reason string) []byte {
@@ -301,4 +303,9 @@ func (h *Hub) sendSpectators(msg []byte) {
 func (h *Hub) broadcastFull() { h.sendSpectators(h.spectatorFull()) }
 
 // broadcastPositions sends the light positions-only update (per tick, join/leave).
-func (h *Hub) broadcastPositions() { h.sendSpectators(h.spectatorPositions()) }
+func (h *Hub) broadcastPositions() {
+	if len(h.spectators) == 0 {
+		return
+	}
+	h.sendSpectators(h.spectatorPositions())
+}

@@ -1,6 +1,9 @@
 package main
 
-import "math/rand"
+import (
+	"encoding/json"
+	"math/rand"
+)
 
 // Wall bits stored in lower 4 bits of each cell.
 // A cell value is the OR of whichever walls are present.
@@ -14,10 +17,11 @@ const (
 )
 
 type Maze struct {
-	Grid  [][]int // Rooms x Rooms grid, each cell = wall bitmask (0-15)
-	Rooms int
-	Start Pos
-	Flag  Pos
+	Grid     [][]int // Rooms x Rooms grid, each cell = wall bitmask (0-15)
+	Rooms    int
+	Start    Pos
+	Flag     Pos
+	FogCache [][]json.RawMessage // [r][c] = precomputed {"type":"state","fog":[...],"pos":{...}}
 }
 
 type MazeConfig struct {
@@ -85,12 +89,44 @@ func GenerateMaze(cfg MazeConfig, rng *rand.Rand) *Maze {
 
 	grid[flag.R][flag.C] |= BitFlag
 
-	return &Maze{
+	m := &Maze{
 		Grid:  grid,
 		Rooms: rooms,
 		Start: start,
 		Flag:  flag,
 	}
+	m.FogCache = buildFogCache(m)
+	return m
+}
+
+func buildFogCache(m *Maze) [][]json.RawMessage {
+	cache := make([][]json.RawMessage, m.Rooms)
+	for r := range cache {
+		cache[r] = make([]json.RawMessage, m.Rooms)
+		for c := range cache[r] {
+			pos := Pos{R: r, C: c}
+			cache[r][c], _ = json.Marshal(fogState{Type: "state", Fog: m.fog(pos), Pos: pos})
+		}
+	}
+	return cache
+}
+
+// fog computes the raw 25-element fog slice (internal use during cache build).
+func (m *Maze) fog(p Pos) []int {
+	fog := make([]int, 25)
+	for i := range fog {
+		fog[i] = WallUp | WallDown | WallRight | WallLeft
+	}
+	for dr := -2; dr <= 2; dr++ {
+		for dc := -2; dc <= 2; dc++ {
+			r, c := p.R+dr, p.C+dc
+			fi := (dr+2)*5 + (dc + 2)
+			if r >= 0 && r < m.Rooms && c >= 0 && c < m.Rooms {
+				fog[fi] = m.Grid[r][c]
+			}
+		}
+	}
+	return fog
 }
 
 // dfs recursively visits unvisited neighbors in random order,
@@ -153,22 +189,3 @@ func carveExtra(grid [][]int, cfg MazeConfig, rooms int, rng *rand.Rand) {
 	}
 }
 
-// Fog returns a flat 25-element slice representing the 5x5 grid of rooms
-// centred on (row, col). Player is always at index 12 (centre).
-// Rooms outside maze bounds are filled with all walls (15).
-func (m *Maze) Fog(p Pos) []int {
-	fog := make([]int, 25)
-	for i := range fog {
-		fog[i] = WallUp | WallDown | WallRight | WallLeft // default: solid wall (out of bounds)
-	}
-	for dr := -2; dr <= 2; dr++ {
-		for dc := -2; dc <= 2; dc++ {
-			r, c := p.R+dr, p.C+dc
-			fi := (dr+2)*5 + (dc + 2)
-			if r >= 0 && r < m.Rooms && c >= 0 && c < m.Rooms {
-				fog[fi] = m.Grid[r][c]
-			}
-		}
-	}
-	return fog
-}
