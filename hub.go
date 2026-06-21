@@ -43,10 +43,11 @@ type Hub struct {
 	restartGame    chan restartRequest
 	joinSpectator  chan *Spectator
 	leaveSpectator chan *Spectator
+	bcast          chan func()
 }
 
 func NewHub(cfg MazeConfig, rng *rand.Rand, tickRate time.Duration) *Hub {
-	return &Hub{
+	h := &Hub{
 		cfg:            cfg,
 		rng:            rng,
 		maze:           GenerateMaze(cfg, rng),
@@ -59,6 +60,15 @@ func NewHub(cfg MazeConfig, rng *rand.Rand, tickRate time.Duration) *Hub {
 		restartGame:    make(chan restartRequest, 1),
 		joinSpectator:  make(chan *Spectator),
 		leaveSpectator: make(chan *Spectator),
+		bcast:          make(chan func(), 16),
+	}
+	go h.runBroadcaster()
+	return h
+}
+
+func (h *Hub) runBroadcaster() {
+	for fn := range h.bcast {
+		fn()
 	}
 }
 
@@ -100,13 +110,11 @@ func (h *Hub) Run() {
 			}
 			h.started = true
 			h.rankings = nil
-			now := time.Now()
 			for _, p := range h.players {
-				p.joinedAt = now
 				p.won = false
 				p.moves = 0
 				p.pos = h.maze.Start
-				p.trySend(h.playerState(p))
+				trySend(p.send,h.playerState(p))
 			}
 			h.broadcastFull()
 			log.Printf("game started with %d players", len(h.players))
@@ -127,7 +135,7 @@ func (h *Hub) Run() {
 				p.moves = 0
 				p.pos = h.maze.Start
 				p.pendingMove.Store(nil)
-				p.trySend([]byte(`{"type":"waiting"}`))
+				trySend(p.send,[]byte(`{"type":"waiting"}`))
 			}
 			h.broadcastFull()
 			log.Printf("game restarted: rooms=%d tick=%s", h.cfg.Rooms, h.tickRate)
@@ -135,7 +143,12 @@ func (h *Hub) Run() {
 		case s := <-h.joinSpectator:
 			h.spectators[s] = true
 			log.Printf("spectator joined (total: %d)", len(h.spectators))
-			s.send <- h.spectatorFull()
+			msg := h.spectatorFull()
+			select {
+			case h.bcast <- func() { s.send <- msg }:
+			default:
+				s.send <- msg // broadcaster full; send directly as fallback
+			}
 
 		case s := <-h.leaveSpectator:
 			if h.spectators[s] {
@@ -164,19 +177,19 @@ func (h *Hub) tick() {
 		}
 		di, ok := dirMap[dir]
 		if !ok {
-			p.trySend(errMsg("unknown direction: " + dir))
+			trySend(p.send,errMsg("unknown direction: " + dir))
 			continue
 		}
 		d := dirs[di]
 		cell := h.maze.Grid[p.pos.R][p.pos.C]
 		if cell&d.wall != 0 {
-			p.trySend(errMsg("wall"))
+			trySend(p.send,errMsg("wall"))
 			continue
 		}
 		p.pos.R += d.dr
 		p.pos.C += d.dc
 		p.moves++
-		p.trySend(h.playerState(p))
+		trySend(p.send,h.playerState(p))
 
 		if p.pos == h.maze.Flag {
 			p.won = true
@@ -200,8 +213,17 @@ func (h *Hub) broadcastMoved(movers []playerInfo) {
 	if len(h.spectators) == 0 {
 		return
 	}
-	msg, _ := json.Marshal(msgMoved{Type: "moved", Players: movers, Rankings: h.rankings})
-	h.sendSpectators(msg)
+	targets := h.spectatorSnapshot()
+	rankings := append([]rankEntry(nil), h.rankings...)
+	select {
+	case h.bcast <- func() {
+		msg, _ := json.Marshal(msgMoved{Type: "moved", Players: movers, Rankings: rankings})
+		for _, s := range targets {
+			trySend(s.send, msg)
+		}
+	}:
+	default: // broadcaster behind; drop this tick's spectator update
+	}
 }
 
 func (h *Hub) Join(id string, conn *websocket.Conn) (*Player, error) {
@@ -310,18 +332,29 @@ func (h *Hub) spectatorPositions() []byte {
 func (h *Hub) broadcastWin(playerID string, moves int) {
 	msg, _ := json.Marshal(msgWin{Type: "win", Player: playerID, Moves: moves, Rankings: h.rankings})
 	if p, ok := h.players[playerID]; ok {
-		p.trySend(msg)
+		trySend(p.send,msg)
 	}
 	h.sendSpectators(msg)
 	log.Printf("player %s won in %d moves", playerID, moves)
 }
 
-func (h *Hub) sendSpectators(msg []byte) {
+func (h *Hub) spectatorSnapshot() []*Spectator {
+	out := make([]*Spectator, 0, len(h.spectators))
 	for s := range h.spectators {
-		select {
-		case s.send <- msg:
-		default:
+		out = append(out, s)
+	}
+	return out
+}
+
+func (h *Hub) sendSpectators(msg []byte) {
+	targets := h.spectatorSnapshot()
+	select {
+	case h.bcast <- func() {
+		for _, s := range targets {
+			trySend(s.send, msg)
 		}
+	}:
+	default:
 	}
 }
 

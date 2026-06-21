@@ -16,14 +16,13 @@ const (
 )
 
 type Player struct {
-	id        string
-	conn      *websocket.Conn
-	hub       *Hub
-	send      chan []byte
-	pos       Pos
-	won      bool
-	moves    int
-	joinedAt time.Time
+	id   string
+	conn *websocket.Conn
+	hub  *Hub
+	send chan []byte
+	pos  Pos
+	won  bool
+	moves int
 
 	pendingMove atomic.Pointer[string] // latest move, nil if none queued
 }
@@ -32,15 +31,6 @@ func (p *Player) queueMove(dir string) {
 	p.pendingMove.Store(&dir)
 }
 
-// trySend queues a message without blocking. If the client's buffer is full
-// (slow/backed-up reader) the frame is dropped — the next tick sends fresh
-// state anyway, so one slow client can't stall the hub.
-func (p *Player) trySend(msg []byte) {
-	select {
-	case p.send <- msg:
-	default:
-	}
-}
 
 func (p *Player) popMove() string {
 	ptr := p.pendingMove.Swap(nil)
